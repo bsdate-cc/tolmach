@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.worktrees/
+# a recording of a voice, for the model tests only (see tests/conftest.py)
+tests/data/benchmark.wav
