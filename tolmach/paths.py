@@ -29,6 +29,10 @@ def key_file() -> Path:
     return home() / "key"
 
 
+def terms_file() -> Path:
+    return home() / "terms.txt"
+
+
 def gateway_file() -> Path:
     return home() / "gateway.json"
 

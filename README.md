@@ -19,6 +19,8 @@ speech. Its tray menu, dialogs and overlay are available in Russian and English.
 - **Punctuation and numbers** come from the model itself: "сорок минут" becomes "40 минут".
 - **The last text again:** `Shift+Win+Z` types the last recognised text once more; the menu can also
   copy it.
+- **A terms dictionary:** `Githab`, `GetHub` and `в гитхабе` are written `GitHub` once the word is
+  in your dictionary - matched by sound, not by letters.
 - **Mutes other programs** while recording (optional).
 - **A tray icon** shows the state: idle, recording, recognising, gateway not answering.
 - **Updates** through git: when the repository has a newer version, the menu offers
@@ -94,6 +96,41 @@ Control page) are supported. The default is a microphone with `VID 1B3F`, `PID 2
 put its identifiers into `client.button` in `config.json`. Such a button usually also mutes the
 microphone in hardware, and the program takes that into account.
 
+## Terms dictionary
+
+The model hears Russian, so a developer's vocabulary comes out right in sound and wrong in letters:
+`Githab`, `GetHub`, `гитхаб`, `Word 3` for `worktree`. The dictionary fixes that after recognition:
+where the recognised words **sound** like a term, the term is written the way the dictionary spells
+it.
+
+The menu item "Open the terms dictionary" creates `%USERPROFILE%\.tolmach\terms.txt` with a starter
+set and opens it in Notepad. One term per line:
+
+```
+GitHub
+worktree = ворктри
+main = мэйн, мейн
+```
+
+A line with only the term is enough when the word is said the way it is written. After `=` come, in
+Russian letters, the ways you say it or the ways the model writes it, when it is not. Changes are
+picked up at once; an empty file, or no file, switches the dictionary off.
+
+What to expect. Words in Russian letters are ordinary speech, so they are replaced only when they
+sound exactly like the term, word for word: `гитхаб` and `в гитхабе` become `GitHub`, and `бетон`
+does not become `Python`. Where the model itself wrote Latin letters - its own sign that the word is
+not a Russian one - a close sound is enough, and the term may come in pieces: `GetHub`, `Local Host`,
+`Whispery`. A short term (`git`, `pip`) is taken only from Latin letters, because `гид` sounds the
+same. Nothing is ever added that was not recognised.
+
+If the model keeps writing a term its own way in Russian letters (`Гит Хаб`, `лакафост`), add that
+spelling to the term's line: `GitHub = гит хаб`.
+
+What it cannot do: a term shorter than three sounds (`Go`, `C`) needs the way it is said
+(`Go = голанг`); a word with a digit inside (`python3`) is left alone; a term cut in two by a pause or
+a punctuation mark is not put together. A word that sounds exactly like a term is replaced even when
+you meant something else: `питон` always becomes `Python`.
+
 ## Settings
 
 `%USERPROFILE%\.tolmach\config.json` (menu item "Open the settings file"). The main ones:
@@ -119,7 +156,8 @@ The two hotkeys and the button identifiers (`client.button`) are read when the t
 
 ## Where things are
 
-- `%USERPROFILE%\.tolmach\` holds the settings, the gateway key, the models and the logs
+- `%USERPROFILE%\.tolmach\` holds the settings, the terms dictionary (`terms.txt`), the gateway key,
+  the models and the logs
   (`logs\tray.log`, `logs\gateway.log`, `logs\startup.log`). The `TOLMACH_HOME` variable points it
   elsewhere.
 - Dictated text and audio are never written to the logs. A recording that the gateway could not

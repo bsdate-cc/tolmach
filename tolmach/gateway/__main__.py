@@ -10,10 +10,12 @@ import json
 import logging
 import os
 import sys
+from typing import Callable
 
+import numpy as np
 from aiohttp import web
 
-from tolmach import VERSION, config, keyfile, logsetup, paths
+from tolmach import VERSION, config, keyfile, logsetup, paths, terms
 from tolmach.gateway.app import build_app
 from tolmach.gateway.recognizer import ModelError, Recognizer
 from tolmach.gateway.state import STOP, Engine
@@ -21,6 +23,14 @@ from tolmach.gateway.vad import SileroVad
 from tolmach.gateway.worker import Worker
 
 log = logging.getLogger("tolmach.gateway")
+
+
+def corrected(recognize: Callable[[np.ndarray], str], dictionary: terms.Dictionary) -> Callable[[np.ndarray], str]:
+    """Recognition, then the terms dictionary. The worker runs this for every piece of speech -
+    a draft, a finished phrase, a phrase of an uploaded file - so all of them read the same."""
+    def run(samples: np.ndarray) -> str:
+        return dictionary.apply(recognize(samples))
+    return run
 
 
 def load_engine(engine: Engine, cfg: config.GatewayConfig) -> None:
@@ -38,7 +48,7 @@ def load_engine(engine: Engine, cfg: config.GatewayConfig) -> None:
         engine.status = "error"
         log.exception("model load crashed")
         return
-    worker = Worker(recognizer.recognize)
+    worker = Worker(corrected(recognizer.recognize, terms.Dictionary(paths.terms_file())))
     worker.start()
     engine.worker = worker
     engine.make_vad = lambda: SileroVad(cfg)

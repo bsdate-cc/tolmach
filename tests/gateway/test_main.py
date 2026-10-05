@@ -1,15 +1,19 @@
 import asyncio
 import json
 import logging
+import queue
 import socket
 
 import aiohttp
+import numpy as np
 import pytest
 
-from tolmach import VERSION, config, paths
-from tolmach.gateway.__main__ import load_engine, main, serve
+from tolmach import VERSION, config, paths, terms
+from tolmach.gateway import __main__ as gateway_main
+from tolmach.gateway.__main__ import corrected, load_engine, main, serve
 from tolmach.gateway.app import build_app
 from tolmach.gateway.state import Engine
+from tolmach.gateway.worker import Job
 from tests.gateway.conftest import AUTH, UPDATE
 
 
@@ -128,3 +132,38 @@ def test_a_crash_before_serving_is_written_to_the_log(monkeypatch):
     text = (paths.logs_dir() / "gateway.log").read_text(encoding="utf-8")
     assert "gateway crashed" in text
     assert "config exploded" in text
+
+
+# --- the terms dictionary
+
+SILENCE = np.zeros(1600, dtype=np.float32)
+
+
+def test_recognised_text_goes_through_the_terms_dictionary():
+    paths.terms_file().write_text("GitHub\n", encoding="utf-8")
+    recognize = corrected(lambda samples: "выложил на Githab", terms.Dictionary(paths.terms_file()))
+    assert recognize(SILENCE) == "выложил на GitHub"
+
+
+def test_without_a_dictionary_the_text_is_what_was_recognised():
+    recognize = corrected(lambda samples: "выложил на Githab", terms.Dictionary(paths.terms_file()))
+    assert recognize(SILENCE) == "выложил на Githab"
+
+
+def test_the_loaded_engine_writes_terms_their_own_way(monkeypatch):
+    class Heard:
+        def recognize(self, samples):
+            return "выложил на Githab"
+
+    monkeypatch.setattr(gateway_main.Recognizer, "load", classmethod(lambda cls, cfg: Heard()))
+    monkeypatch.setattr(gateway_main, "SileroVad", lambda cfg: object())
+    paths.terms_file().write_text("GitHub\n", encoding="utf-8")
+    engine = Engine(model_name="gigaam-v3")
+    load_engine(engine, config.GatewayConfig())
+    assert engine.status == "ok"
+    got: queue.Queue = queue.Queue()
+    try:
+        engine.worker.submit(Job("session", 1, True, SILENCE, lambda job, text: got.put(text)))
+        assert got.get(timeout=5) == "выложил на GitHub"
+    finally:
+        engine.worker.stop()

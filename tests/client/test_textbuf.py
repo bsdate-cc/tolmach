@@ -71,3 +71,12 @@ def test_draft_after_an_unfinished_phrase_is_shown_as_its_continuation():
     buf.add_phrase("К ужину пришли")
     buf.set_draft("Соседи принес")
     assert buf.display() == "К ужину пришли соседи принес"
+
+
+def test_a_word_in_latin_letters_at_the_seam_keeps_its_capital():
+    # A name or a term is written its own way wherever the cut fell.
+    for word in ("GitHub", "Windows", "Docker"):
+        buf = TextBuffer()
+        buf.add_phrase("Я выложил это на")
+        buf.add_phrase(f"{word} вчера вечером.")
+        assert buf.final() == f"Я выложил это на {word} вчера вечером."

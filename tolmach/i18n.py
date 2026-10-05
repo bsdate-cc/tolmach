@@ -49,6 +49,7 @@ EN = {
     "Глушить другие программы при записи": "Mute other programs while recording",
     "Автозапуск": "Start with Windows",
     "Открыть файл настроек": "Open the settings file",
+    "Открыть словарь терминов": "Open the terms dictionary",
     "Кнопка: найдена": "Button: found",
     "Кнопка: не найдена": "Button: not found",
     "Настройки: ошибка в config.json — см. журнал": "Settings: an error in config.json — see the log",

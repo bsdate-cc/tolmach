@@ -78,7 +78,8 @@ def test_no_code_shows_a_russian_literal_past_the_catalogue():
     """A Cyrillic string literal outside _()/N_()/Text() would stay Russian in an English menu.
     Allowed: the catalogue itself, comments and docstrings (not literals handed to anything),
     and the two places that are about characters, not words."""
-    allowed_files = {"i18n.py", "textbuf.py", "startup.py"}  # the launcher takes "д"/"да" for yes
+    # the launcher takes "д"/"да" for yes; terms.py holds the sounds of Russian letters
+    allowed_files = {"i18n.py", "textbuf.py", "startup.py", "terms.py"}
     cyrillic = re.compile("[А-Яа-яЁё]")
     marked = marked_texts()
     offenders = []

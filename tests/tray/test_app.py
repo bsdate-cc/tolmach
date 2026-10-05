@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from tolmach import paths
 from tolmach.tray import app as tray_app
 from tolmach.tray import gatewayctl
 
@@ -265,3 +266,14 @@ def test_the_menu_offers_both_copying_and_inserting_the_last_text(tray):
     assert insert.enabled is True
     tray._insert_last(tray.icon, None)
     assert tray._client.inserts == ["menu"]
+
+
+def test_the_terms_dictionary_is_created_with_the_starter_set_and_opened(tray, monkeypatch):
+    opened = []
+    monkeypatch.setattr(tray_app.subprocess, "Popen", lambda args, **kwargs: opened.append(args))
+    tray._open_terms(tray.icon, None)
+    assert "GitHub" in paths.terms_file().read_text(encoding="utf-8")
+    assert opened == [["notepad.exe", str(paths.terms_file())]]
+    paths.terms_file().write_text("Docker\n", encoding="utf-8")
+    tray._open_terms(tray.icon, None)
+    assert paths.terms_file().read_text(encoding="utf-8") == "Docker\n"       # an existing dictionary is the user's

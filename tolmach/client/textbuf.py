@@ -14,8 +14,10 @@ def _unfinished(text: str) -> bool:
 def _continued(text: str) -> str:
     """The recogniser starts every piece it is given with a capital. A piece that follows
     an unfinished one continues its sentence, so the capital goes; an abbreviation (USB)
-    keeps its. A name at the seam is lowered too - rarer than a cut in mid-sentence."""
-    if text[:1].isupper() and not text[1:2].isupper():
+    keeps its, and so does a word in Latin letters - that is a name or a term (GitHub,
+    Windows), written the way it is written. A Russian name at the seam is lowered too -
+    rarer than a cut in mid-sentence."""
+    if text[:1].isupper() and not text[:1].isascii() and not text[1:2].isupper():
         return text[0].lower() + text[1:]
     return text
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pystray
 
-from tolmach import APP_NAME, VERSION, config, i18n, keyfile, paths
+from tolmach import APP_NAME, VERSION, config, i18n, keyfile, paths, terms
 from tolmach.client import overlay, paste
 from tolmach.client.app import ClientApp
 from tolmach.i18n import N_, _
@@ -116,6 +116,7 @@ class TrayApp:
             item(lambda i: _("Автозапуск"), _menu_action(self._toggle_autostart),
                  checked=lambda i: self._cfg.autostart),
             item(lambda i: _("Открыть файл настроек"), _menu_action(self._open_config)),
+            item(lambda i: _("Открыть словарь терминов"), _menu_action(self._open_terms)),
             menu.SEPARATOR,
             item(lambda i: gatewayctl.status_line(self._health), None, enabled=False),
             item(lambda i: _("Кнопка: найдена") if self._client.button_found else _("Кнопка: не найдена"),
@@ -214,6 +215,10 @@ class TrayApp:
         if not paths.config_file().exists():
             config.save(config.load().config)
         subprocess.Popen(["notepad.exe", str(paths.config_file())])
+
+    def _open_terms(self, icon, item) -> None:
+        terms.ensure_file(paths.terms_file())
+        subprocess.Popen(["notepad.exe", str(paths.terms_file())])
 
     def _open_logs(self, icon, item) -> None:
         subprocess.Popen(["explorer.exe", str(paths.logs_dir())])

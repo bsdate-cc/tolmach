@@ -14,6 +14,7 @@ def menu_rows(tray):  # noqa: F811
 def test_the_tray_menu_and_tooltip_switch_with_the_setting(tray):  # noqa: F811
     tray._ready = True
     assert "Начать диктовку" in menu_rows(tray) and tray.icon.title == f"Толмач {VERSION}"
+    assert "Открыть словарь терминов" in menu_rows(tray)
     paths.config_file().write_text(json.dumps({"language": "en"}), encoding="utf-8")
     updates = tray.icon.menu_updates
     tray.refresh()
@@ -21,7 +22,8 @@ def test_the_tray_menu_and_tooltip_switch_with_the_setting(tray):  # noqa: F811
     assert tray.icon.menu_updates == updates + 1
     assert tray.icon.title == f"Tolmach {VERSION}"
     for english in ("Start dictation", "Copy the last text", "Insert the last text", "Microphone",
-                    "Overlay position", "Start with Windows", "Open the logs", "Exit…"):
+                    "Overlay position", "Start with Windows", "Open the terms dictionary", "Open the logs",
+                    "Exit…"):
         assert english in rows, english
     assert not [row for row in rows if re.search("[А-Яа-яЁё]", row) and "Язык" not in row]
 
