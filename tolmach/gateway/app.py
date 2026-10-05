@@ -55,8 +55,13 @@ def _resolve(future: asyncio.Future, text: str) -> None:
         future.set_result(text)
 
 
-async def recognize_all(engine: Engine, samples: np.ndarray) -> str:
-    """Cut by pauses, recognize every phrase on the one worker thread, join with spaces."""
+def _seconds(samples: int) -> float:
+    return round(samples / SAMPLE_RATE, 3)
+
+
+async def recognize_phrases(engine: Engine, samples: np.ndarray) -> list[tuple[Final, str]]:
+    """Cut by pauses and recognize every phrase on the one worker thread: the phrases in
+    order, each with its text."""
     loop = asyncio.get_running_loop()
 
     def cut() -> list[Final]:
@@ -78,7 +83,7 @@ async def recognize_all(engine: Engine, samples: np.ndarray) -> str:
         texts = await asyncio.gather(*futures)
     finally:
         engine.worker.forget(session)  # the caller hung up: do not recognize the rest
-    return " ".join(t for t in texts if t)
+    return list(zip(finals, texts))
 
 
 async def transcriptions(request: web.Request) -> web.Response:
@@ -100,18 +105,27 @@ async def transcriptions(request: web.Request) -> web.Response:
     if data is None:
         return _problem(400, "invalid_request", "no 'file' part")
     response_format = fields.get("response_format", "json")
-    if response_format not in ("json", "text"):
-        return _problem(400, "invalid_request", "response_format must be 'json' or 'text'")
+    if response_format not in ("json", "text", "verbose_json"):
+        return _problem(400, "invalid_request", "response_format must be 'json', 'text' or 'verbose_json'")
     try:
         rate, samples = wav.decode(data)
     except wav.WavError as e:
         return _problem(400, "invalid_request", f"cannot read the file as WAV: {e}")
     if rate != SAMPLE_RATE:
         return _problem(400, "invalid_request", f"only {SAMPLE_RATE} Hz WAV is supported, got {rate} Hz")
-    text = await recognize_all(request.app[ENGINE], samples)
+    # a phrase the model found no words in is noise: it is in no answer
+    phrases = [(final, text) for final, text in await recognize_phrases(request.app[ENGINE], samples) if text]
+    text = " ".join(text for _, text in phrases)
     if response_format == "text":
         return web.Response(text=text)
-    return web.json_response({"text": text}, dumps=_dumps)
+    if response_format == "json":
+        return web.json_response({"text": text}, dumps=_dumps)
+    # the phrases with their places in the file, in seconds: for a caller that puts several
+    # recordings on one timeline
+    segments = [{"id": n, "start": _seconds(final.start), "end": _seconds(final.end), "text": text}
+                for n, (final, text) in enumerate(phrases)]
+    return web.json_response({"text": text, "duration": _seconds(len(samples)), "segments": segments},
+                             dumps=_dumps)
 
 
 async def shutdown(request: web.Request) -> web.Response:

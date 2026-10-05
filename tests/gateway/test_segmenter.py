@@ -142,3 +142,86 @@ def test_input_is_converted_to_float32():
     seg = Segmenter(vad, draft_interval_s=0.5)
     out = seg.feed(np.full(20 * WINDOW, 0.1, dtype=np.float64))
     assert out and all(a.samples.dtype == np.float32 for a in out)
+
+
+# --- where a phrase lies in the audio
+
+
+def test_a_final_knows_where_it_lies_in_the_stream():
+    closed = tone(4000, 0.5)
+    vad = ScriptedVad(speech=list(range(5, 60)) + list(range(200, 260)), close_after={80: closed, 300: closed})
+    seg = Segmenter(vad, draft_interval_s=1000.0)
+    finals = [a for a in feed_windows(seg, 320) if isinstance(a, Final)]
+    # the first phrase is windows 1..80; the second begins with its pre-roll, before window 200
+    assert [(f.start, f.end) for f in finals] == [(0, 80 * WINDOW),
+                                                  ((199 - PREROLL_WINDOWS) * WINDOW, 300 * WINDOW)]
+    assert all(f.end - f.start == len(f.samples) for f in finals)
+
+
+def test_the_pieces_of_a_phrase_cut_by_the_hard_limit_lie_end_to_end():
+    vad = ScriptedVad(speech=range(1, 5000))
+    seg = Segmenter(vad, draft_interval_s=1000.0)
+    limit_windows = int(HARD_LIMIT_S * SAMPLE_RATE) // WINDOW + 1
+    cut = [a for a in feed_windows(seg, limit_windows + 5) if isinstance(a, Final)][0]
+    rest = seg.commit()[0]
+    assert (cut.start, cut.end) == (0, limit_windows * WINDOW)
+    assert (rest.start, rest.end) == (limit_windows * WINDOW, (limit_windows + 5) * WINDOW)
+
+
+def test_the_tail_closed_by_commit_ends_where_the_audio_ends():
+    vad = ScriptedVad(speech=range(5, 100))
+    seg = Segmenter(vad)
+    feed_windows(seg, 20)
+    seg.feed(tone(100))                                  # less than a window: the VAD never saw it
+    tail = seg.commit()[0]
+    assert (tail.start, tail.end) == (0, 20 * WINDOW + 100)
+
+
+def test_a_segment_only_the_vad_saw_is_placed_at_the_end_of_what_was_fed():
+    short = tone(3000, 0.3)
+    vad = ScriptedVad()                                  # is_speech() stays False
+    vad.on_flush = [short]
+    seg = Segmenter(vad)
+    feed_windows(seg, 8)
+    only = seg.commit()[0]
+    assert (only.start, only.end) == (8 * WINDOW - 3000, 8 * WINDOW)
+
+
+def test_positions_go_on_after_a_commit():
+    vad = ScriptedVad(speech=range(1, 500))
+    seg = Segmenter(vad)
+    feed_windows(seg, 10)
+    first = seg.commit()[0]
+    feed_windows(seg, 10)
+    second = seg.commit()[0]
+    assert (first.start, first.end) == (0, 10 * WINDOW)
+    assert (second.start, second.end) == (10 * WINDOW, 20 * WINDOW)
+
+
+def test_a_segment_only_the_vad_saw_never_begins_before_the_phrase_before_it():
+    # windows 1..30 are a phrase; then the detector closes a long segment of its own, speech never reported
+    vad = ScriptedVad(speech=range(1, 20), close_after={30: tone(100), 50: tone(40 * WINDOW, 0.3)})
+    seg = Segmenter(vad, draft_interval_s=1000.0)
+    finals = [a for a in feed_windows(seg, 60) if isinstance(a, Final)]
+    assert [(f.start, f.end) for f in finals] == [(0, 30 * WINDOW), (30 * WINDOW, 50 * WINDOW)]
+
+
+def test_a_segment_longer_than_everything_fed_begins_at_the_beginning():
+    vad = ScriptedVad()
+    vad.on_flush = [tone(10 * WINDOW)]
+    seg = Segmenter(vad)
+    feed_windows(seg, 8)
+    only = seg.commit()[0]
+    assert (only.start, only.end) == (0, 8 * WINDOW)
+
+
+def test_positions_go_on_after_a_commit_that_took_an_unfed_tail():
+    vad = ScriptedVad(speech=range(1, 500))
+    seg = Segmenter(vad)
+    feed_windows(seg, 20)
+    seg.feed(tone(100))                                  # less than a window: the VAD never saw it
+    first = seg.commit()[0]
+    feed_windows(seg, 10)
+    second = seg.commit()[0]
+    assert (first.start, first.end) == (0, 20 * WINDOW + 100)
+    assert (second.start, second.end) == (20 * WINDOW + 100, 30 * WINDOW + 100)

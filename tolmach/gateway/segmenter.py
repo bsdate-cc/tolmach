@@ -38,6 +38,8 @@ class Draft:
 class Final:
     item: int
     samples: np.ndarray
+    start: int  # where the phrase lies in everything fed so far, in samples
+    end: int
 
 
 class Segmenter:
@@ -46,19 +48,32 @@ class Segmenter:
         self._draft_every = int(draft_interval_s * SAMPLE_RATE)
         self._hard_limit = int(HARD_LIMIT_S * SAMPLE_RATE)
         self._item = 1
+        self._origin = 0  # where _buf begins in everything fed so far
+        self._last_end = 0  # where the phrase before ended
+        self._buf = np.zeros(0, dtype=np.float32)
         self._clear()
 
     def _clear(self) -> None:
+        self._origin += len(self._buf)
         self._buf = np.zeros(0, dtype=np.float32)
         self._fed = 0  # how much of _buf the VAD has seen
         self._started = False
         self._since_draft = 0
 
     def _next_phrase(self) -> None:
+        self._origin += self._fed
         self._buf = self._buf[self._fed:]  # keep what the VAD has not seen yet
         self._fed = 0
         self._started = False
         self._since_draft = 0
+
+    def _final(self, samples: np.ndarray, end: int) -> Final:
+        """A phrase that ends at `end`. One cut from our own buffer begins where the buffer does;
+        a segment only the VAD saw is placed by its length, and never before the end of the
+        phrase before it: the times of the phrases never run backwards."""
+        start = max(end - len(samples), self._last_end)
+        self._last_end = end
+        return Final(self._item, samples, start, end)
 
     def feed(self, samples: np.ndarray) -> list[Draft | Final]:
         out: list[Draft | Final] = []
@@ -78,11 +93,11 @@ class Segmenter:
                 # buffer: the VAD's segment starts late and loses the first syllable
                 # (measured: "Чьих" instead of "Ничьих").
                 samples = self._buf[:self._fed].copy() if self._started else np.concatenate(closed)
-                out.append(Final(self._item, samples))
+                out.append(self._final(samples, self._origin + self._fed))
                 self._item += 1
                 self._next_phrase()
             elif self._started and self._fed >= self._hard_limit:
-                out.append(Final(self._item, self._buf[:self._fed].copy()))
+                out.append(self._final(self._buf[:self._fed].copy(), self._origin + self._fed))
                 self._item += 1
                 self._vad.reset()
                 self._next_phrase()
@@ -91,6 +106,7 @@ class Segmenter:
                 self._since_draft = 0
             elif not self._started and self._fed > PREROLL_WINDOWS * w:
                 drop = self._fed - PREROLL_WINDOWS * w
+                self._origin += drop
                 self._buf = self._buf[drop:]
                 self._fed -= drop
         return out
@@ -100,10 +116,11 @@ class Segmenter:
         self._vad.flush()
         leftover = self._vad.pop_segments()
         out = []
+        end = self._origin + len(self._buf)
         if self._started and len(self._buf):
-            out.append(Final(self._item, self._buf.copy()))  # the tail the VAD has not seen included
+            out.append(self._final(self._buf.copy(), end))  # the tail the VAD has not seen included
         elif leftover:
-            out.append(Final(self._item, np.concatenate(leftover)))
+            out.append(self._final(np.concatenate(leftover), end))
         self._item += len(out)
         self._vad.reset()
         self._clear()

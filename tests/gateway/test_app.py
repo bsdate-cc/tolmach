@@ -9,7 +9,7 @@ from tolmach import VERSION
 from tolmach.gateway.app import build_app
 from tolmach.gateway.state import STOP
 from tests.gateway.conftest import AUTH, UPDATE, append_event, wav_bytes
-from tests.gateway.fakes import silent
+from tests.gateway.fakes import ScriptedVad, silent, tone
 
 URL = "/v1/audio/transcriptions"
 
@@ -198,3 +198,52 @@ async def test_a_long_file_does_not_hold_up_live_dictation(client, engine, recog
     # 70 s of file = phrases of 30 s, 30 s and 10 s. The dictated 0.5 s ran right after the file
     # phrase that was already in the engine, not after the whole file.
     assert calls == [480256, 8000, 480256, 159488]
+
+
+# --- the phrases with their times
+
+
+def two_phrases() -> ScriptedVad:
+    """Windows 1..30 are one phrase; after a pause the speech goes on to the end of the file."""
+    return ScriptedVad(speech=list(range(1, 20)) + list(range(60, 90)), close_after={30: tone(100)})
+
+
+async def test_transcription_with_the_phrases_and_their_times(client, engine):
+    engine.make_vad = two_phrases
+    r = await client.post(URL, data=form(wav_bytes(3.0), response_format="verbose_json"), headers=AUTH)
+    assert r.status == 200
+    # the second phrase begins with its pre-roll (16 windows before window 60) and takes the tail of the file
+    assert await r.json() == {
+        "text": "len15360 len25984",
+        "duration": 3.0,
+        "segments": [{"id": 0, "start": 0.0, "end": 0.96, "text": "len15360"},
+                     {"id": 1, "start": 1.376, "end": 3.0, "text": "len25984"}],
+    }
+
+
+async def test_a_phrase_without_words_is_not_among_the_segments(client, engine, recognize):
+    engine.make_vad = two_phrases
+    recognize.fn = lambda samples: "" if len(samples) == 15360 else "слова"
+    r = await client.post(URL, data=form(wav_bytes(3.0), response_format="verbose_json"), headers=AUTH)
+    body = await r.json()
+    assert body["text"] == "слова"
+    assert body["segments"] == [{"id": 0, "start": 1.376, "end": 3.0, "text": "слова"}]
+
+
+async def test_a_silent_file_has_its_length_and_no_segments(client, recognize):
+    recognize.fn = silent
+    r = await client.post(URL, data=form(wav_bytes(2.0), response_format="verbose_json"), headers=AUTH)
+    assert await r.json() == {"text": "", "duration": 2.0, "segments": []}
+
+
+async def test_times_are_rounded_to_a_millisecond(client):
+    r = await client.post(URL, data=form(wav_bytes(1.00059), response_format="verbose_json"), headers=AUTH)
+    body = await r.json()
+    assert body["duration"] == 1.001                       # 16009 samples
+    assert body["segments"] == [{"id": 0, "start": 0.0, "end": 1.001, "text": "len16009"}]
+
+
+async def test_cyrillic_in_the_phrases_is_not_escaped(client, recognize):
+    recognize.fn = lambda samples: "Привет, мир."
+    r = await client.post(URL, data=form(wav_bytes(1.0), response_format="verbose_json"), headers=AUTH)
+    assert (await r.text()).count("Привет, мир.") == 2     # in "text" and in the one segment

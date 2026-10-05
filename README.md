@@ -32,7 +32,9 @@ Two processes. The **tray** holds the icon, records from the microphone, shows t
 the text. The **gateway** is a local recognition service on `127.0.0.1` that speaks a subset of the
 OpenAI Realtime protocol (`WS /v1/realtime`) and accepts files (`POST /v1/audio/transcriptions`); it
 is protected by a key and is not reachable from the network. The tray starts the gateway and watches
-it.
+it. For a file, `response_format=verbose_json` adds the phrases with their start and end times to the
+answer. The times are those of the piece of sound handed to the recogniser: a phrase begins up to half a
+second before its first word and ends after the pause that closed it.
 
 ## Requirements
 
