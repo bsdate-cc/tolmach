@@ -26,6 +26,8 @@ EN = {
     "Ничего не распознано": "Nothing was recognised",
     "Не удалось вставить": "Could not insert the text",
     "Вставлять пока нечего": "Nothing to insert yet",
+    "Отменено": "Cancelled",
+    "Диктовкой управляет кнопка микрофона": "The microphone button starts and stops dictation",
     # the menu
     "Начать диктовку": "Start dictation",
     "Остановить диктовку": "Stop dictation",
@@ -33,6 +35,10 @@ EN = {
     "Вставить последний текст": "Insert the last text",
     "Микрофон": "Microphone",
     "По умолчанию": "Default",
+    "Управление диктовкой": "Dictation control",
+    "Авто: кнопка, если она есть у микрофона": "Auto: the button if the microphone has one",
+    "Кнопка микрофона": "Microphone button",
+    "Горячая клавиша": "Hotkey",
     "Положение окошка": "Overlay position",
     "Язык / Language": "Язык / Language",
     "Авто / Auto": "Авто / Auto",
@@ -90,13 +96,13 @@ EN = {
         "Update Tolmach to version {version} and restart?\n\n"
         "The tray and the gateway will restart; a dictation in progress will be cut off.",
     "Шлюз не остановился — перезапуск отменён.\n\n"
-    "Остановите его из меню («Остановить шлюз») и повторите, или запустите tray.cmd.":
+    "Остановите его из меню («Остановить шлюз») и повторите, или запустите tolmach.cmd.":
         "The gateway did not stop — the restart was cancelled.\n\n"
-        "Stop it from the menu (Stop the gateway) and try again, or run tray.cmd.",
+        "Stop it from the menu (Stop the gateway) and try again, or run tolmach.cmd.",
     "Не удалось запустить новый трей — перезапуск отменён, работает прежний.\n\n"
-    "Причина — в журнале (tray.log). Перезапустить можно через tray.cmd.":
+    "Причина — в журнале (tray.log). Перезапустить можно через tolmach.cmd.":
         "The new tray could not be started — the restart was cancelled, the old one keeps running.\n\n"
-        "The reason is in the log (tray.log). You can restart with tray.cmd.",
+        "The reason is in the log (tray.log). You can restart with tolmach.cmd.",
     "Остановить шлюз тоже?\n\n"
     "Да — остановить шлюз и закрыть значок.\n"
     "Нет — закрыть только значок, шлюз продолжит работать.":

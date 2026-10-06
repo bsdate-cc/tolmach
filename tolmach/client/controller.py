@@ -26,9 +26,12 @@ RATE = 16000
 COMMIT_TIMEOUT_S = 15.0
 MESSAGE_SECONDS = 3.0
 MUTED_MESSAGE_SECONDS = 2.0
+CANCELLED_MESSAGE_SECONDS = 1.5
 ERROR_SHOWN_S = 30.0
 
 IDLE, RECORDING, FINISHING, ERROR = "idle", "recording", "finishing", "error"
+# The states in which there is something to cancel: a recording, or a text waiting to be typed.
+CANCELLABLE = (RECORDING, FINISHING)
 
 MSG_LISTENING = N_("Слушаю…")
 MSG_PASTING = N_("Вставляю…")
@@ -39,6 +42,15 @@ MSG_MIC_MUTED = N_("Микрофон выключен — нажмите кно�
 MSG_NOTHING = N_("Ничего не распознано")
 MSG_PASTE_FAILED = N_("Не удалось вставить")
 MSG_NO_LAST_TEXT = N_("Вставлять пока нечего")
+MSG_CANCELLED = N_("Отменено")
+MSG_BUTTON_RULES = N_("Диктовкой управляет кнопка микрофона")
+
+
+def button_rules(control: str, button_mic: bool) -> bool:
+    """Whether the microphone button - and not the hotkey or the menu item - starts and stops a
+    dictation: the setting client.control, and whether the recording comes from the button's
+    own microphone."""
+    return control == "button" or (control == "auto" and button_mic)
 
 
 @dataclass
@@ -46,7 +58,9 @@ class Ports:
     load_config: Callable[[], ClientConfig]
     recorder: Any   # start(session, microphone) raises RecorderError; stop(); on_button_microphone(microphone)
     streams: Any    # open(session) -> stream, raises StreamError; stream.send/commit/close never raise
-    overlay: Any    # show(text), message(text, seconds), hide()
+    # show(text): something in progress, with the cross that cancels it;
+    # message(text, seconds, back_to): a notice, then back to `back_to` (or hidden, with None); hide()
+    overlay: Any
     paster: Any     # paste(text) -> bool
     muter: Any      # mute(), unmute(); never raise
     clock: Callable[[], float]
@@ -65,6 +79,7 @@ class _Session:
     samples: int = 0
     muted: bool = False
     button_mic: bool = False
+    by_button: bool = False
     stopped: float | None = None
     done: bool = False
     failed: bool = False
@@ -114,6 +129,8 @@ class Controller:
             self._on_toggle(event)
         elif isinstance(event, ev.InsertLast):
             self._insert_last()
+        elif isinstance(event, ev.Cancel):
+            self._cancel(event)
         elif isinstance(event, ev.ButtonConnected):
             # A wrong "on" would swallow a press that in fact switched the microphone on
             # (three presses to get a recording); "not known" costs at most the old
@@ -140,20 +157,39 @@ class Controller:
         pressed = event.source == "button"
         if pressed and self._mic_live is not None:
             self._mic_live = not self._mic_live
-        if self._recording is not None:
+        cfg = self.ports.load_config()
+        session = self._recording
+        if session is None:
+            button_mic = self.ports.recorder.on_button_microphone(cfg.microphone)
+        elif pressed:
+            button_mic = session.button_mic  # the press itself says that the button is there
+        else:
+            button_mic = self._button_is_there(session)
+        # A microphone with a button is switched by a finger and by nothing else, so the button
+        # and the hotkey do not mix: one of them starts and stops a dictation (client.control).
+        # A dictation being recorded keeps to the end what it began with.
+        control = session.cfg.control if session is not None else cfg.control
+        if pressed and control == "hotkey":
+            log.info("button press not taken: the hotkey starts and stops a dictation")
+            return  # it has switched its microphone, and that is all it does here
+        if not pressed and button_rules(control, button_mic):
+            log.info("%s press not taken: the microphone button starts and stops a dictation", event.source)
+            self._notify(MSG_BUTTON_RULES, MUTED_MESSAGE_SECONDS)
+            return
+        if session is not None:
             self._stop()
             return
-        cfg = self.ports.load_config()
-        button_mic = self.ports.recorder.on_button_microphone(cfg.microphone)
         if pressed and button_mic and self._mic_live is False:
             # The microphone was left on (the last recording was not stopped with the
             # button, or it was just plugged in): this press switched it off.
             log.info("button press not taken as a start: it switched the microphone off")
-            self.ports.overlay.message(_(MSG_MIC_MUTED), MUTED_MESSAGE_SECONDS)
+            self._notify(MSG_MIC_MUTED, MUTED_MESSAGE_SECONDS)
             return
         self._start(cfg, button_mic, event)
 
-    def _start(self, cfg: ClientConfig, button_mic: bool, event: ev.Toggle) -> None:
+    def _start(self, cfg: ClientConfig, button_mic: bool, event: ev.Toggle,
+               after: "_Session | None" = None) -> None:
+        """Begin a recording. `after` is the cancelled recording this one takes the place of."""
         session_id = self._next_id
         self._next_id += 1
         # The microphone first, then the cue: whatever is said after "Слушаю…" is on the
@@ -179,14 +215,17 @@ class Controller:
         session = _Session(session_id, cfg, stream, opened)
         session.last_activity = session.started
         session.button_mic = button_mic
+        session.by_button = event.source == "button"
         if cfg.muted_floor_dbfs is not None:
             session.floor = FloorCheck(cfg.muted_floor_dbfs)
         self._recording = session
         self._error = False
-        if cfg.mute_other_apps:
+        if after is not None and after.muted:
+            session.muted = True  # the other programs are muted still: no gap of sound in between
+        elif cfg.mute_other_apps:
             session.muted = True
             self.ports.muter.mute()
-        log.info("dictation %d started", session_id)
+        log.info("dictation %d started%s", session_id, ": listening again" if after is not None else "")
         self._refresh_state()
 
     def _stop(self) -> None:
@@ -241,7 +280,52 @@ class Controller:
         self._stop_recorder()
         self._unmute(session)
         session.stream.close()
-        self.ports.overlay.message(_(MSG_MIC_MUTED), MUTED_MESSAGE_SECONDS)
+        self._notify(MSG_MIC_MUTED, MUTED_MESSAGE_SECONDS)
+        self._refresh_state()
+
+    def _button_is_there(self, session: _Session) -> bool:
+        """Whether this recording comes from a microphone whose button is there to be pressed
+        now. It began that way or it did not - but the microphone may have been pulled out
+        since, and with it the only thing that could end the dictation or listen again."""
+        return session.button_mic and self.ports.recorder.on_button_microphone(session.cfg.microphone)
+
+    def _cancel(self, event: ev.Cancel) -> None:
+        """Esc, or the cross on the overlay: drop what is in progress - the recording if
+        there is one, else everything that waits to be typed. Nothing of it is typed, kept
+        or saved; the last text stays what it was, and so does the button's microphone.
+
+        A recording started with the button, on the button's own microphone, is dropped and
+        begun again: that microphone is still on and only the button can switch it off, so
+        the dictation is not over - and it is the button that ends it, as always. Unless the
+        microphone has been pulled out meanwhile: then the cancel is for good."""
+        session = self._recording
+        again = False
+        if session is not None:
+            self._recording = None
+            self._stop_recorder()
+            self.ports.load_config()  # as before any question about the button: the settings are read first
+            again = session.by_button and self._button_is_there(session)
+            if not again:
+                self._unmute(session)
+            dropped = [session]
+        else:
+            dropped, self._finishing = self._finishing, []
+        if not dropped:
+            return  # a press that came too late: the text is typed already, or there was none
+        for gone in dropped:
+            gone.stream.close()
+            log.info("dictation %d cancelled (%s): %.1f s of audio dropped",
+                     gone.id, event.source, gone.samples / RATE)
+        if again:
+            self._start(session.cfg, True, ev.Toggle("button"), after=session)
+            if self._recording is None:
+                self._unmute(session)  # it did not start: the other programs get their sound back
+            return
+        if self._finishing:
+            # A dictation stopped before this one still waits to be typed: back to it.
+            self.ports.overlay.show(_(MSG_PASTING))
+        else:
+            self._notify(MSG_CANCELLED, CANCELLED_MESSAGE_SECONDS)
         self._refresh_state()
 
     # -- gateway events -----------------------------------------------------
@@ -347,7 +431,7 @@ class Controller:
             log.info("dictation %d: nothing recognised", session.id)
             message = MSG_NOTHING
         if message is not None:
-            self.ports.overlay.message(_(message), MESSAGE_SECONDS)
+            self._notify(message, MESSAGE_SECONDS)
         elif self._recording is None:
             self.ports.overlay.hide()
         session.stream.close()
@@ -360,7 +444,7 @@ class Controller:
     def _insert_last(self) -> None:
         """The last recognised text once more, into the window in front - the way a dictation goes in."""
         if not self.last_text:
-            self.ports.overlay.message(_(MSG_NO_LAST_TEXT), MUTED_MESSAGE_SECONDS)
+            self._notify(MSG_NO_LAST_TEXT, MUTED_MESSAGE_SECONDS)
             return
         cfg = self.ports.load_config()
         typed = self.last_text + " " if cfg.append_space else self.last_text
@@ -368,12 +452,25 @@ class Controller:
             log.info("last text inserted again: %d characters", len(self.last_text))
         else:
             log.warning("last text could not be inserted again")
-            self.ports.overlay.message(_(MSG_PASTE_FAILED), MESSAGE_SECONDS)
+            self._notify(MSG_PASTE_FAILED, MESSAGE_SECONDS)
 
     def _fail(self, message: str) -> None:
         self._mark_error(True)
-        self.ports.overlay.message(_(message), MESSAGE_SECONDS)
+        self._notify(message, MESSAGE_SECONDS)
         self._refresh_state()
+
+    def _notify(self, message: str, seconds: float) -> None:
+        """A notice on the overlay. It must not take the overlay away from a dictation in
+        progress - an open microphone with nothing on the screen to say so: when the notice
+        has been read, the overlay goes back to that dictation."""
+        self.ports.overlay.message(_(message), seconds, self._in_progress())
+
+    def _in_progress(self) -> str | None:
+        """What the overlay shows of the dictations in progress; None when there is none."""
+        session = self._recording
+        if session is not None:
+            return tail(session.text.display(), session.cfg.overlay_tail_chars) or _(MSG_LISTENING)
+        return _(MSG_PASTING) if self._finishing else None
 
     def _refresh_state(self) -> None:
         if self._recording is not None:

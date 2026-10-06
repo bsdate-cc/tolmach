@@ -61,6 +61,15 @@ class ClientConfig:
     hotkey: str = "shift+win+q"
     # Types the last recognised text again; "" switches it off.
     insert_last_hotkey: str = "shift+win+z"
+    # Drops the dictation in progress. Taken from the other programs only while there is
+    # something to cancel, so it may be a key without modifiers; "" switches it off.
+    cancel_hotkey: str = "esc"
+    # What starts and stops a dictation. "button": the microphone button, and the hotkey and
+    # the menu item do nothing. "hotkey": the hotkey and the menu item, and the button only
+    # switches its microphone. "auto": the button when the recording comes from the button's
+    # own microphone - a finger is the only thing that switches that one - and the hotkey
+    # (and a button of any other device) otherwise.
+    control: str = "auto"
     button: ButtonConfig = field(default_factory=ButtonConfig)
     muted_floor_dbfs: float | None = -70.0
     mute_other_apps: bool = True
@@ -105,6 +114,7 @@ class Loaded:
 # (the gateway and the startup checks read the config too). A test pins the two together.
 OVERLAY_POSITIONS = ("top-left", "top", "top-right", "left", "center", "right",
                      "bottom-left", "bottom", "bottom-right")
+CONTROLS = ("auto", "button", "hotkey")
 
 
 def _is_hex4(v: str) -> bool:
@@ -129,6 +139,7 @@ _CHECKS = {
     "client.max_recording_s": (lambda v: v > 0, "must be > 0"),
     "client.overlay_tail_chars": (lambda v: v >= 20, "must be >= 20"),
     "client.insert_mode": (lambda v: v in ("type", "paste"), "must be 'type' or 'paste'"),
+    "client.control": (lambda v: v in CONTROLS, "must be 'auto', 'button' or 'hotkey'"),
     "language": (lambda v: v in ("auto", "ru", "en"), "must be 'auto', 'ru' or 'en'"),
     "client.overlay_position": (lambda v: v in OVERLAY_POSITIONS, "must be one of: " + ", ".join(OVERLAY_POSITIONS)),
 }

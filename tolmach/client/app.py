@@ -14,7 +14,7 @@ import numpy as np
 from tolmach import config, paths
 from tolmach.client import events as ev
 from tolmach.client import mutesound, recorder
-from tolmach.client.controller import Controller, Ports
+from tolmach.client.controller import CANCELLABLE, Controller, Ports, button_rules
 from tolmach.client.devicewatch import DeviceWatch
 from tolmach.client.hotkey import Hotkey
 from tolmach.client.micbutton import MicButton
@@ -63,10 +63,12 @@ class NullMuter:
 
 class ClientApp:
     def __init__(self, on_state: Callable[[str], None] = lambda state: None):
+        self._on_state = on_state
         self._events: queue.Queue = queue.Queue()
         post = self._events.put
         self._paster = Paster()
-        self.overlay = Overlay(target_window=self._paster.target_window)
+        self.overlay = Overlay(target_window=self._paster.target_window,
+                               on_cancel=lambda: post(ev.Cancel("overlay")))
         self._watch = DeviceWatch()
         self._recorder = Recorder(post, list_is_fresh=lambda: self._watch.active and not self._watch.pending())
         self.controller = Controller(Ports(
@@ -78,12 +80,14 @@ class ClientApp:
             muter=mutesound.Muter(),
             clock=time.monotonic,
             save_wav=save_failed_wav,
-            on_state=on_state,
+            on_state=self._state_changed,
         ), self._events)
         client_cfg = config.load().config.client
         self.overlay.set_position(client_cfg.overlay_position)
         self._hotkey = Hotkey(post, client_cfg.hotkey)
         self._insert_hotkey = Hotkey(post, client_cfg.insert_last_hotkey, lambda: ev.InsertLast("hotkey"))
+        self._cancel_hotkey = Hotkey(post, client_cfg.cancel_hotkey, lambda: ev.Cancel("hotkey"),
+                                     bare=True, held=False)
         try:
             self._button = MicButton(post, client_cfg.button.vid, client_cfg.button.pid, client_cfg.button.mask)
         except ValueError as e:
@@ -101,6 +105,12 @@ class ClientApp:
         self.overlay.set_position(cfg.overlay_position)
         return cfg
 
+    def _state_changed(self, state: str) -> None:
+        # The key that cancels is ours only while there is something to cancel; the rest of
+        # the time Esc belongs to the other programs.
+        self._cancel_hotkey.arm(state in CANCELLABLE)
+        self._on_state(state)
+
     @property
     def state(self) -> str:
         return self.controller.state
@@ -112,6 +122,18 @@ class ClientApp:
     @property
     def hotkey_registered(self) -> bool:
         return self._hotkey.registered
+
+    @property
+    def hotkeys(self) -> dict[str, str]:
+        """The hotkeys that are ours now, by what they do; "" for one that is off or taken."""
+        return {"dictation": self._hotkey.text if self._hotkey.registered else "",
+                "insert_last": self._insert_hotkey.text if self._insert_hotkey.registered else ""}
+
+    def button_rules(self) -> bool:
+        """Whether the microphone button - not the hotkey or the menu item - would start a
+        dictation now."""
+        cfg = self._load_config()
+        return button_rules(cfg.control, self._recorder.on_button_microphone(cfg.microphone))
 
     @property
     def button_found(self) -> bool:
@@ -129,6 +151,7 @@ class ClientApp:
         self._ticker_thread.start()
         self._hotkey.start()
         self._insert_hotkey.start()
+        self._cancel_hotkey.start()
         if self._button is not None:
             self._button.start()
 
@@ -142,6 +165,7 @@ class ClientApp:
         self._stopping.set()
         self._hotkey.stop()
         self._insert_hotkey.stop()
+        self._cancel_hotkey.stop()
         if self._button is not None:
             self._button.stop()
         self._events.put(ev.Quit())

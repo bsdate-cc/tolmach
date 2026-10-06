@@ -38,6 +38,11 @@ class FakeClient:
     def __init__(self, on_state=None):
         self.state, self.last_text, self.button_found = "idle", "", False
         self.starts = self.stops = 0
+        self.hotkeys = {"dictation": "", "insert_last": ""}     # none is ours
+        self.ruled_by_button = False
+
+    def button_rules(self):
+        return self.ruled_by_button
 
     def microphones(self, periodic):
         return None
@@ -229,6 +234,33 @@ def test_the_position_menu_offers_all_nine_places_in_russian_and_marks_the_curre
     assert [row.text for row in rows if row.checked] == ["Посередине"]
 
 
+def test_what_starts_a_dictation_is_picked_from_the_menu(tray):
+    assert [row.text for row in tray._controls()] == [
+        "Авто: кнопка, если она есть у микрофона", "Кнопка микрофона", "Горячая клавиша"]
+    assert [row.text for row in tray._controls() if row.checked] == ["Авто: кнопка, если она есть у микрофона"]
+    tray._ready = True
+    tray._pick_control("hotkey")(tray.icon, None)
+    assert tray_app.config.load().config.client.control == "hotkey"
+    assert [row.text for row in tray._controls() if row.checked] == ["Горячая клавиша"]
+
+
+def test_what_starts_a_dictation_cannot_be_changed_while_one_is_being_recorded(tray):
+    assert [row.enabled for row in tray._controls()] == [True, True, True]
+    tray._client.state = "recording"
+    assert [row.enabled for row in tray._controls()] == [False, False, False]
+    tray._client.state = "finishing"
+    assert [row.enabled for row in tray._controls()] == [True, True, True]
+
+
+def test_refresh_rebuilds_the_menu_when_what_starts_a_dictation_changes(tray):
+    tray._ready = True
+    tray.refresh()
+    before = tray.icon.menu_updates
+    tray_app.paths.config_file().write_text('{"client": {"control": "button"}}', encoding="utf-8")
+    tray.refresh()
+    assert tray.icon.menu_updates == before + 1
+
+
 def test_refresh_rebuilds_the_menu_when_the_overlay_position_changes(tray):
     tray._ready = True
     tray.refresh()
@@ -277,3 +309,56 @@ def test_the_terms_dictionary_is_created_with_the_starter_set_and_opened(tray, m
     paths.terms_file().write_text("Docker\n", encoding="utf-8")
     tray._open_terms(tray.icon, None)
     assert paths.terms_file().read_text(encoding="utf-8") == "Docker\n"       # an existing dictionary is the user's
+
+
+# --- the menu says what to press: the hotkeys that are in force stand next to what they do
+
+
+def shown_rows(tray):
+    tray._ready = True
+    tray.refresh()
+    return [item.text for item in tray.icon.menu.items if item.visible]
+
+
+def test_the_menu_names_the_hotkeys_that_are_in_force(tray):
+    tray._client.hotkeys = {"dictation": "shift+win+q", "insert_last": "shift+win+z"}
+    rows = shown_rows(tray)
+    assert "Начать диктовку\tShift+Win+Q" in rows
+    assert "Вставить последний текст\tShift+Win+Z" in rows
+    tray._client.state = "recording"
+    assert "Остановить диктовку\tShift+Win+Q" in shown_rows(tray)
+
+
+def test_a_hotkey_that_is_off_or_taken_is_not_named(tray):
+    rows = shown_rows(tray)
+    assert "Начать диктовку" in rows and "Вставить последний текст" in rows
+
+
+def test_when_the_button_rules_the_menu_says_so_instead_of_the_hotkey(tray):
+    tray._client.hotkeys = {"dictation": "shift+win+q", "insert_last": "shift+win+z"}
+    tray._client.ruled_by_button = True
+    rows = shown_rows(tray)
+    assert "Начать диктовку\tКнопка микрофона" in rows
+    assert "Вставить последний текст\tShift+Win+Z" in rows    # that one works whatever starts a dictation
+
+
+def test_the_menu_is_rebuilt_when_the_button_begins_to_rule_or_a_hotkey_changes(tray):
+    shown_rows(tray)
+    before = tray.icon.menu_updates
+    tray._client.ruled_by_button = True
+    tray.refresh()
+    assert tray.icon.menu_updates == before + 1
+    tray._client.hotkeys = {"dictation": "shift+win+q", "insert_last": ""}
+    tray.refresh()
+    assert tray.icon.menu_updates == before + 2
+
+
+def test_what_starts_a_dictation_is_offered_only_when_there_is_a_button(tray):
+    assert "Управление диктовкой" not in shown_rows(tray)     # no button: the hotkey it is, nothing to choose
+    tray._client.button_found = True
+    assert "Управление диктовкой" in shown_rows(tray)
+
+
+def test_set_to_the_button_with_no_button_the_way_back_stays_in_the_menu(tray):
+    tray_app.paths.config_file().write_text('{"client": {"control": "button"}}', encoding="utf-8")
+    assert "Управление диктовкой" in shown_rows(tray)

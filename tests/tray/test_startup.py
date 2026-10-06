@@ -327,7 +327,7 @@ def test_console_starts_the_tray_and_closes_by_itself(monkeypatch, capsys):
     code, spawned, held, out = console(monkeypatch, capsys, startup.Outcome(True, False, ()))
     assert code == 0 and len(spawned) == 1 and held == []
     assert "[9/9] Tray" in out and "started" in out
-    assert "tray.cmd" in (paths.logs_dir() / "startup.log").read_text(encoding="utf-8")
+    assert "tolmach.cmd" in (paths.logs_dir() / "startup.log").read_text(encoding="utf-8")
 
 
 def test_console_holds_the_window_after_a_warning(monkeypatch, capsys):
@@ -550,3 +550,22 @@ def test_a_default_file_cut_short_is_offered_again():
     config.resolve_model_path("silero_vad.onnx").write_bytes(b"cut")
     result, said, asked, fetched = offer(answer=True)
     assert fetched == [("silero_vad.onnx",)]
+
+
+# --- the launcher carries the name of the program; the former name still starts it
+
+
+def test_the_launcher_is_tolmach_cmd_and_there_is_no_other():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    assert "-m tolmach.tray.startup" in (root / "tolmach.cmd").read_text(encoding="ascii")
+    assert [path.name for path in root.glob("*.cmd")] == ["tolmach.cmd"]
+
+
+def test_nothing_the_program_says_names_the_former_launcher():
+    from pathlib import Path
+
+    package = Path(__file__).resolve().parents[2] / "tolmach"
+    named = [path.name for path in sorted(package.rglob("*.py")) if "tray.cmd" in path.read_text(encoding="utf-8")]
+    assert named == []

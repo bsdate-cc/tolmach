@@ -16,6 +16,9 @@ MARGIN = 60
 # A 3x3 grid inside the work area of the monitor; the setting client.overlay_position names one cell.
 POSITIONS = ("top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right")
 MONITOR_DEFAULTTOPRIMARY = 1
+BACKGROUND = "#1e1e1e"
+CROSS = "✕"  # the multiplication sign that windows use for "close"
+CROSS_DIM, CROSS_LIT, CROSS_LIT_BACKGROUND = "#9a9a9a", "#ffffff", "#3c3c3c"
 
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
@@ -96,27 +99,36 @@ class Overlay:
     """The controller's `overlay` port. Every public method is thread-safe and returns at once.
 
     The window shows up on the monitor of the window that gets the text (`target_window`
-    says which; 0 means the main monitor), at the position set with set_position()."""
+    says which; 0 means the main monitor), at the position set with set_position().
 
-    def __init__(self, target_window: Callable[[], int] = lambda: 0) -> None:
+    show() is for what is in progress and can be cancelled: it carries a cross, and a click
+    on the cross calls `on_cancel` (on the overlay's thread - it must only pass the word on).
+    message() is a notice without a cross that goes away by itself - back to what is in
+    progress when the caller says there is something, hidden otherwise."""
+
+    def __init__(self, target_window: Callable[[], int] = lambda: 0,
+                 on_cancel: Callable[[], None] = lambda: None) -> None:
         self._target_window = target_window
+        self._on_cancel = on_cancel
         self._position = "center"
         self._queue: queue.Queue = queue.Queue()
         self._hide_job = None
         self._root = None
         self._label = None
+        self._cross = None
         self._thread = threading.Thread(target=self._run, name="overlay", daemon=True)
         self._thread.start()
 
     def show(self, text: str) -> None:
-        self._queue.put(("show", text, 0.0))
+        self._queue.put(("show", text, 0.0, None))
 
-    def message(self, text: str, seconds: float) -> None:
-        """Show `text`, then hide after `seconds` unless something else is shown first."""
-        self._queue.put(("message", text, seconds))
+    def message(self, text: str, seconds: float, back_to: str | None = None) -> None:
+        """Show `text` for `seconds`; then, unless something else was shown or hidden meanwhile,
+        show `back_to` again as show() would - or hide, when there is nothing to go back to."""
+        self._queue.put(("message", text, seconds, back_to))
 
     def hide(self) -> None:
-        self._queue.put(("hide", "", 0.0))
+        self._queue.put(("hide", "", 0.0, None))
 
     def set_position(self, position: str) -> None:
         """One of POSITIONS, from the settings; takes effect the next time something is shown."""
@@ -124,7 +136,7 @@ class Overlay:
             self._position = position
 
     def close(self) -> None:
-        self._queue.put(("close", "", 0.0))
+        self._queue.put(("close", "", 0.0, None))
         self._thread.join(2.0)
 
     def _run(self) -> None:
@@ -135,10 +147,16 @@ class Overlay:
             self._root.overrideredirect(True)
             self._root.attributes("-topmost", True)
             self._root.attributes("-alpha", 0.85)
-            self._root.configure(bg="#1e1e1e")
-            self._label = tk.Label(self._root, text="", font=("Segoe UI", 14), fg="#ffffff", bg="#1e1e1e",
+            self._root.configure(bg=BACKGROUND)
+            self._label = tk.Label(self._root, text="", font=("Segoe UI", 14), fg="#ffffff", bg=BACKGROUND,
                                    wraplength=500, justify="left", padx=16, pady=12)
-            self._label.pack()
+            self._label.grid(row=0, column=0)
+            self._cross = tk.Label(self._root, text=CROSS, font=("Segoe UI", 11), fg=CROSS_DIM, bg=BACKGROUND,
+                                   padx=10, pady=6, cursor="hand2")
+            self._cross.grid(row=0, column=1, sticky="ne")
+            self._cross.bind("<Button-1>", self._clicked)
+            self._cross.bind("<Enter>", lambda event: self._light(True))
+            self._cross.bind("<Leave>", lambda event: self._light(False))
             self._root.update_idletasks()
             _make_no_activate(self._root.winfo_id())
             _restore_foreground(previous)
@@ -148,19 +166,29 @@ class Overlay:
             log.exception("overlay thread failed")
         finally:
             # Tk objects must die on the thread that made them, or the process aborts at exit.
-            root, self._root, self._label = self._root, None, None
+            root, self._root, self._label, self._cross = self._root, None, None, None
             if root is not None:
                 try:
                     root.destroy()
                 except Exception:
                     pass
 
+    def _clicked(self, event=None) -> None:
+        try:
+            self._on_cancel()
+        except Exception:
+            log.exception("the cross of the overlay could not pass the cancel on")
+
+    def _light(self, on: bool) -> None:
+        if self._cross is not None:
+            self._cross.config(fg=CROSS_LIT if on else CROSS_DIM, bg=CROSS_LIT_BACKGROUND if on else BACKGROUND)
+
     def _poll(self) -> None:
         try:
             while True:
-                command, text, seconds = self._queue.get_nowait()
+                command, text, seconds, back_to = self._queue.get_nowait()
                 try:
-                    if self._apply(command, text, seconds):
+                    if self._apply(command, text, seconds, back_to):
                         return  # closed: do not reschedule
                 except Exception:
                     log.exception("overlay command %s failed", command)
@@ -168,7 +196,7 @@ class Overlay:
             pass
         self._root.after(POLL_MS, self._poll)
 
-    def _apply(self, command: str, text: str, seconds: float) -> bool:
+    def _apply(self, command: str, text: str, seconds: float, back_to: str | None = None) -> bool:
         if command == "close":
             self._root.destroy()
             return True
@@ -177,8 +205,14 @@ class Overlay:
             self._hide_job = None
         if command == "hide":
             self._root.withdraw()
+            self._light(False)
             return False
         self._label.config(text=text)
+        if command == "show":
+            self._cross.grid()
+        else:
+            self._cross.grid_remove()
+            self._light(False)  # it may have gone from under the pointer: not lit when it comes back
         # Placed first, shown second: a window shown at its old spot and then moved is a flicker.
         self._root.update_idletasks()
         work = _work_area(self._target_window()) or (0, 0, self._root.winfo_screenwidth(),
@@ -188,7 +222,7 @@ class Overlay:
         self._root.update_idletasks()
         self._place(work, spot)  # in case the hidden window had not learned its new size yet
         if command == "message":
-            self._hide_job = self._root.after(int(seconds * 1000), self._timed_hide)
+            self._hide_job = self._root.after(int(seconds * 1000), lambda: self._after_message(back_to))
         return False
 
     def _place(self, work: tuple[int, int, int, int], current: str | None) -> str:
@@ -197,6 +231,9 @@ class Overlay:
             self._root.geometry(spot)
         return spot
 
-    def _timed_hide(self) -> None:
+    def _after_message(self, back_to: str | None) -> None:
         self._hide_job = None
-        self._root.withdraw()
+        if back_to is None:
+            self._root.withdraw()
+        else:
+            self._apply("show", back_to, 0.0)

@@ -460,11 +460,12 @@ def test_the_log_says_how_long_the_microphone_took_to_open(caplog):
 
 
 def stopped_without_the_button(rig):
-    """A recording on the button's microphone, stopped by the hotkey: the microphone stays on."""
+    """A recording on the button's microphone, stopped by the silence: the microphone stays on."""
     rig.recorder.button_mic = True
     rig.toggle()
     rig.speak(1)
-    rig.send(ev.Toggle("hotkey"), ev.Committed(1))
+    rig.now += 61.0
+    rig.send(ev.Tick(), ev.Committed(1))
 
 
 def starts(rig):
@@ -563,9 +564,12 @@ def test_a_wrong_guess_is_corrected_by_the_muted_check():
     assert len(starts(rig)) == 3
 
 
-def test_the_hotkey_never_counts_as_a_press_of_the_button():
-    rig = Rig()
-    stopped_without_the_button(rig)
+def test_under_the_hotkey_the_microphone_stays_as_it_is_and_nothing_is_swallowed():
+    rig = Rig(control="hotkey")
+    rig.recorder.button_mic = True
+    rig.send(ev.Toggle("hotkey"))
+    rig.speak(1)
+    rig.send(ev.Toggle("hotkey"), ev.Committed(1))
     rig.send(ev.Toggle("hotkey"))                   # the microphone is still on: this records
     assert len(starts(rig)) == 2
     assert rig.controller.state == c.RECORDING
@@ -620,3 +624,551 @@ def test_the_log_counts_the_characters_inserted_again_and_never_shows_them(caplo
         rig.send(ev.InsertLast("hotkey"))
     assert "last text inserted again: 7 characters" in caplog.text
     assert "Секрет" not in caplog.text
+
+
+# --- a dictation can be dropped: Esc, or the cross on the overlay
+
+
+def test_a_cancel_while_recording_drops_everything_and_types_nothing():
+    rig = Rig()
+    rig.toggle()
+    rig.speak(1)
+    rig.send(ev.Phrase(1, "не то"), ev.Cancel("hotkey"))
+    stream = rig.streams.opened[0]
+    assert stream.closed and not stream.committed
+    assert rig.recorder.calls[-1] == ("stop",)
+    assert rig.muter.calls == ["mute", "unmute"]
+    assert rig.paster.pasted == []
+    assert rig.saved == []
+    assert rig.overlay.last == ("message", c.MSG_CANCELLED)
+    assert rig.states == [c.RECORDING, c.IDLE]
+
+
+def test_a_cancel_after_the_stop_keeps_the_text_from_being_typed():
+    rig = Rig()
+    rig.dictate(1, "не то")
+    rig.send(ev.Cancel("overlay"))
+    assert rig.streams.opened[0].closed
+    assert rig.overlay.last == ("message", c.MSG_CANCELLED)
+    assert rig.controller.state == c.IDLE
+    rig.send(ev.Committed(1))
+    assert rig.paster.pasted == []
+
+
+def test_the_last_text_stays_what_it_was_before_the_cancelled_dictation():
+    rig = Rig()
+    rig.dictate(1, "Хорошо.")
+    rig.send(ev.Committed(1))
+    rig.toggle()
+    rig.speak(2)
+    rig.send(ev.Phrase(2, "не то"), ev.Cancel("hotkey"))
+    assert rig.controller.last_text == "Хорошо."
+    rig.send(ev.InsertLast("hotkey"))
+    assert rig.paster.pasted == ["Хорошо. ", "Хорошо. "]
+
+
+def test_what_the_gateway_says_after_a_cancel_changes_nothing():
+    rig = Rig()
+    rig.toggle()
+    rig.speak(1)
+    rig.send(ev.Cancel("hotkey"))
+    shown = len(rig.overlay.calls)
+    rig.send(ev.Draft(1, "поздно"), ev.Phrase(1, "поздно"), ev.Committed(1), ev.StreamFailed(1, "closed"),
+             ev.AudioChunk(1, tone()), ev.Tick())
+    assert rig.paster.pasted == []
+    assert rig.saved == []
+    assert len(rig.overlay.calls) == shown
+    assert rig.controller.state == c.IDLE
+
+
+def test_a_cancel_with_nothing_in_progress_does_nothing():
+    rig = Rig()
+    rig.send(ev.Cancel("hotkey"))
+    rig.toggle()
+    rig.speak(1)
+    rig.send(ev.Cancel("hotkey"), ev.Cancel("hotkey"), ev.Cancel("overlay"))
+    assert rig.overlay.messages() == [c.MSG_CANCELLED]
+    assert rig.recorder.calls == [("start", 1, ""), ("stop",)]
+    assert rig.states == [c.RECORDING, c.IDLE]
+
+
+def test_a_cancel_drops_the_recording_and_leaves_the_dictation_before_it_to_be_typed():
+    rig = Rig()
+    rig.dictate(1, "первая")
+    rig.toggle()
+    rig.speak(2)
+    rig.send(ev.Phrase(2, "вторая"), ev.Cancel("hotkey"))
+    assert rig.streams.opened[1].closed and not rig.streams.opened[0].closed
+    assert rig.overlay.last == ("show", c.MSG_PASTING)
+    assert rig.controller.state == c.FINISHING
+    rig.send(ev.Committed(1))
+    assert rig.paster.pasted == ["первая "]
+    assert rig.controller.state == c.IDLE
+
+
+def test_a_cancel_with_no_recording_drops_everything_that_waits_to_be_typed():
+    rig = Rig()
+    rig.dictate(1, "первая")
+    rig.dictate(2, "вторая")
+    rig.send(ev.Cancel("overlay"))
+    assert [stream.closed for stream in rig.streams.opened] == [True, True]
+    rig.send(ev.Committed(2), ev.Committed(1))
+    assert rig.paster.pasted == []
+    assert rig.controller.state == c.IDLE
+
+
+def test_a_recorder_that_will_not_stop_does_not_keep_a_cancel_from_finishing():
+    rig = Rig()
+    rig.toggle()
+    rig.speak(1)
+    rig.recorder.fail_stop = True
+    rig.send(ev.Cancel("hotkey"))
+    assert rig.muter.calls == ["mute", "unmute"]
+    assert rig.streams.opened[0].closed
+    assert rig.controller.state == c.IDLE
+
+
+def test_a_new_dictation_after_a_cancel_goes_as_usual():
+    rig = Rig()
+    rig.toggle()
+    rig.speak(1)
+    rig.send(ev.Phrase(1, "не то"), ev.Cancel("hotkey"))
+    rig.dictate(2, "То.")
+    rig.send(ev.Committed(2))
+    assert rig.paster.pasted == ["То. "]
+    assert rig.controller.last_text == "То."
+
+
+def test_a_dictation_started_with_the_hotkey_is_cancelled_for_good_even_on_the_buttons_microphone():
+    # The microphone was on before the hotkey and stays on after the cancel: the next press of
+    # the hotkey records at once.
+    rig = Rig(control="hotkey")
+    rig.recorder.button_mic = True
+    rig.send(ev.Toggle("hotkey"))
+    rig.speak(1)
+    rig.send(ev.Cancel("hotkey"))
+    assert rig.controller.state == c.IDLE
+    assert rig.overlay.last == ("message", c.MSG_CANCELLED)
+    assert len(starts(rig)) == 1
+    rig.send(ev.Toggle("hotkey"))
+    assert starts(rig)[-1] == ("start", 2, "")
+
+
+# --- the button switches its microphone on and off in hardware, and nothing else can: a dictation
+# --- started with it listens again after a cancel, and it is the button that ends it
+
+
+def started_with_the_button(rig):
+    rig.recorder.button_mic = True
+    rig.toggle()
+    rig.speak(1)
+    rig.send(ev.Phrase(1, "не то"))
+
+
+def test_a_cancel_of_a_dictation_started_with_the_button_listens_again():
+    rig = Rig()
+    started_with_the_button(rig)
+    rig.send(ev.Cancel("hotkey"))
+    first = rig.streams.opened[0]
+    assert first.closed and not first.committed
+    assert rig.recorder.calls == [("start", 1, ""), ("stop",), ("start", 2, "")]
+    assert len(rig.streams.opened) == 2
+    assert rig.overlay.last == ("show", c.MSG_LISTENING)
+    assert rig.overlay.messages() == []
+    assert rig.states == [c.RECORDING]                  # never left: the key that cancels stays ours
+    rig.speak(2)
+    rig.send(ev.Phrase(2, "То."))
+    rig.toggle()
+    rig.send(ev.Committed(2))
+    assert rig.paster.pasted == ["То. "]
+    assert rig.controller.state == c.IDLE
+
+
+def test_the_other_programs_stay_muted_while_it_listens_again():
+    rig = Rig()
+    started_with_the_button(rig)
+    rig.send(ev.Cancel("overlay"))
+    assert rig.muter.calls == ["mute"]                  # no gap of sound between the two recordings
+    rig.speak(2)
+    rig.toggle()
+    assert rig.muter.calls == ["mute", "unmute"]
+
+
+def test_the_button_ends_it_and_with_nothing_said_nothing_is_typed():
+    rig = Rig()
+    started_with_the_button(rig)
+    rig.send(ev.Cancel("hotkey"))
+    rig.toggle()                                        # the button: its microphone is off again
+    assert rig.streams.opened[1].closed and not rig.streams.opened[1].committed
+    assert rig.paster.pasted == []
+    assert rig.controller.state == c.IDLE
+    rig.toggle()                                        # and the next press records, at once
+    assert starts(rig)[-1] == ("start", 3, "")
+    assert c.MSG_MIC_MUTED not in rig.overlay.messages()
+
+
+def test_every_cancel_listens_again():
+    rig = Rig()
+    started_with_the_button(rig)
+    rig.send(ev.Cancel("hotkey"))
+    rig.speak(2)
+    rig.send(ev.Phrase(2, "опять не то"), ev.Cancel("overlay"))
+    assert len(starts(rig)) == 3
+    assert [stream.closed for stream in rig.streams.opened] == [True, True, False]
+    assert rig.controller.state == c.RECORDING
+    rig.speak(3)
+    rig.send(ev.Phrase(3, "То."))
+    rig.toggle()
+    rig.send(ev.Committed(3))
+    assert rig.paster.pasted == ["То. "]
+
+
+def test_what_the_gateway_says_about_the_cancelled_one_does_not_reach_the_new_one():
+    rig = Rig()
+    started_with_the_button(rig)
+    rig.send(ev.Cancel("hotkey"))
+    rig.send(ev.Draft(1, "поздно"), ev.Phrase(1, "поздно"), ev.Committed(1), ev.StreamFailed(1, "closed"),
+             ev.AudioChunk(1, tone()))
+    assert rig.overlay.last == ("show", c.MSG_LISTENING)
+    assert rig.streams.opened[1].sent == 0
+    assert rig.controller.state == c.RECORDING and rig.saved == []
+    rig.speak(2)
+    rig.toggle()
+    rig.send(ev.Committed(2))
+    assert rig.paster.pasted == []
+
+
+def test_listening_again_that_cannot_start_gives_the_sound_back():
+    for broken, message in (("streams", c.MSG_GATEWAY_DOWN), ("recorder", c.MSG_MIC_MISSING)):
+        rig = Rig()
+        started_with_the_button(rig)
+        getattr(rig, broken).fail = True
+        rig.send(ev.Cancel("hotkey"))
+        assert rig.muter.calls == ["mute", "unmute"], broken
+        assert rig.overlay.last == ("message", message), broken
+        assert rig.controller.state == c.ERROR, broken
+        assert rig.paster.pasted == []
+
+
+def test_with_muting_switched_off_listening_again_mutes_nothing():
+    rig = Rig(mute_other_apps=False)
+    started_with_the_button(rig)
+    rig.send(ev.Cancel("hotkey"))
+    rig.speak(2)
+    rig.toggle()
+    assert rig.muter.calls == []
+
+
+def test_after_the_button_stopped_it_a_cancel_is_for_good():
+    # "Вставляю…": the button has switched its microphone off already - nothing to listen with.
+    rig = Rig()
+    started_with_the_button(rig)
+    rig.toggle()
+    rig.send(ev.Cancel("overlay"))
+    assert rig.controller.state == c.IDLE
+    assert rig.overlay.last == ("message", c.MSG_CANCELLED)
+    assert len(starts(rig)) == 1
+    rig.send(ev.Committed(1))
+    assert rig.paster.pasted == []
+
+
+def test_the_log_shows_the_cancel_and_the_new_start_and_never_what_was_said(caplog):
+    rig = Rig()
+    with caplog.at_level("INFO", logger="tolmach"):
+        started_with_the_button(rig)
+        rig.send(ev.Cancel("hotkey"))
+    assert "dictation 1 cancelled (hotkey): 1.0 s of audio dropped" in caplog.text
+    assert "dictation 2 started: listening again" in caplog.text
+    assert "не то" not in caplog.text
+
+
+def test_the_log_says_a_dictation_was_cancelled_and_never_what_was_said(caplog):
+    rig = Rig()
+    with caplog.at_level("INFO", logger="tolmach"):
+        rig.toggle()
+        rig.speak(1)
+        rig.send(ev.Phrase(1, "Секретная фраза."), ev.Cancel("overlay"))
+    assert "dictation 1 cancelled (overlay): 1.0 s of audio dropped" in caplog.text
+    assert "Секретная" not in caplog.text
+
+
+def test_every_way_a_dictation_ends_leaves_nothing_to_cancel():
+    # Esc is taken from the other programs for as long as the state is one of CANCELLABLE:
+    # a dictation that ended in any way must not leave it there.
+    def typed(rig):
+        rig.dictate(1, "текст")
+        rig.send(ev.Committed(1))
+
+    def nothing_recognised(rig):
+        rig.dictate(1)
+        rig.send(ev.Committed(1))
+
+    def cancelled(rig):
+        rig.toggle()
+        rig.speak(1)
+        rig.send(ev.Cancel("hotkey"))
+
+    def cancelled_after_the_stop(rig):
+        rig.dictate(1, "текст")
+        rig.send(ev.Cancel("overlay"))
+
+    def too_short(rig):
+        rig.toggle()
+        rig.speak(1, seconds=0.2)
+        rig.toggle()
+
+    def muted(rig):
+        rig.toggle()
+        rig.speak(1, seconds=0.5, amplitude=QUIET)
+
+    def link_lost(rig):
+        rig.toggle()
+        rig.speak(1)
+        rig.send(ev.StreamFailed(1, "closed"))
+
+    def no_answer(rig):
+        rig.dictate(1, "текст")
+        rig.now += c.COMMIT_TIMEOUT_S + 0.5
+        rig.send(ev.Tick())
+
+    def gateway_down(rig):
+        rig.streams.fail = True
+        rig.toggle()
+
+    def no_microphone(rig):
+        rig.recorder.fail = True
+        rig.toggle()
+
+    assert c.CANCELLABLE == (c.RECORDING, c.FINISHING)
+    for ending in (typed, nothing_recognised, cancelled, cancelled_after_the_stop, too_short, muted,
+                   link_lost, no_answer, gateway_down, no_microphone):
+        rig = Rig()
+        ending(rig)
+        assert rig.controller.state not in c.CANCELLABLE, ending.__name__
+        assert rig.states[-1] not in c.CANCELLABLE, ending.__name__
+
+
+# --- what starts and stops a dictation: the microphone button, or the hotkey and the menu. A microphone
+# --- with a button is switched by a finger only, so the two do not mix: "auto" gives it to the button
+# --- when the recording comes from the button's own microphone, and to the hotkey otherwise
+
+
+def test_on_the_buttons_microphone_the_hotkey_and_the_menu_start_nothing():
+    for source in ("hotkey", "menu"):
+        rig = Rig()                                 # control: "auto"
+        rig.recorder.button_mic = True
+        rig.send(ev.Toggle(source))
+        assert starts(rig) == [], source
+        assert rig.overlay.calls == [("message", c.MSG_BUTTON_RULES)], source
+        assert rig.states == [], source
+
+
+def test_on_the_buttons_microphone_the_hotkey_stops_nothing_either():
+    rig = Rig()
+    rig.recorder.button_mic = True
+    rig.toggle()
+    rig.speak(1)
+    rig.send(ev.Toggle("hotkey"))
+    assert rig.controller.state == c.RECORDING
+    assert not rig.streams.opened[0].committed
+    assert rig.overlay.last == ("message", c.MSG_BUTTON_RULES)
+    rig.toggle()                                    # the button does
+    assert rig.streams.opened[0].committed
+
+
+def test_on_any_other_microphone_the_hotkey_and_the_button_both_work():
+    rig = Rig()                                     # control: "auto", no button's microphone
+    rig.send(ev.Toggle("hotkey"))
+    rig.speak(1)
+    rig.send(ev.Toggle("hotkey"), ev.Committed(1))
+    rig.toggle()                                    # a button of another device: a remote control
+    assert len(starts(rig)) == 2
+    assert c.MSG_BUTTON_RULES not in rig.overlay.messages()
+
+
+def test_set_to_the_button_the_hotkey_does_nothing_on_any_microphone():
+    rig = Rig(control="button")
+    rig.send(ev.Toggle("hotkey"))
+    assert starts(rig) == []
+    assert rig.overlay.last == ("message", c.MSG_BUTTON_RULES)
+    rig.toggle()
+    assert len(starts(rig)) == 1
+
+
+def test_set_to_the_hotkey_the_button_only_switches_its_microphone():
+    rig = Rig(control="hotkey")
+    rig.recorder.button_mic = True
+    rig.toggle()                                    # the user switches the microphone on
+    assert starts(rig) == [] and rig.overlay.calls == []
+    rig.send(ev.Toggle("hotkey"))
+    rig.speak(1)
+    rig.send(ev.Phrase(1, "Привет."))
+    rig.toggle()                                    # a press in the middle is not a stop
+    assert rig.controller.state == c.RECORDING
+    rig.send(ev.Toggle("hotkey"), ev.Committed(1))
+    assert rig.paster.pasted == ["Привет. "]
+
+
+def test_set_to_the_hotkey_a_microphone_switched_off_is_noticed_as_before():
+    rig = Rig(control="hotkey")
+    rig.recorder.button_mic = True
+    rig.send(ev.Toggle("hotkey"))
+    rig.speak(1, seconds=0.5, amplitude=QUIET)      # the microphone is off: its button was never pressed
+    assert rig.overlay.last == ("message", c.MSG_MIC_MUTED)
+    assert rig.controller.state == c.IDLE
+
+
+def test_the_last_text_is_inserted_again_whatever_starts_a_dictation():
+    rig = Rig()
+    rig.recorder.button_mic = True
+    rig.dictate(1, "Привет.")
+    rig.send(ev.Committed(1), ev.InsertLast("hotkey"))
+    assert rig.paster.pasted == ["Привет. ", "Привет. "]
+
+
+def test_the_setting_is_read_at_every_press():
+    from dataclasses import replace
+
+    rig = Rig()
+    rig.recorder.button_mic = True
+    rig.send(ev.Toggle("hotkey"))
+    assert starts(rig) == []
+    rig.cfg = replace(rig.cfg, control="hotkey")    # chosen in the menu meanwhile
+    rig.send(ev.Toggle("hotkey"))
+    assert len(starts(rig)) == 1
+
+
+def test_a_dictation_keeps_to_the_end_what_it_began_with():
+    # The setting changed in the middle - by hand in the file, the menu does not let one: the
+    # button that began this dictation still ends it, and the hotkey still does not.
+    from dataclasses import replace
+
+    rig = Rig()
+    rig.recorder.button_mic = True
+    rig.toggle()
+    rig.speak(1)
+    rig.cfg = replace(rig.cfg, control="hotkey")
+    rig.send(ev.Toggle("hotkey"))
+    assert rig.controller.state == c.RECORDING
+    assert rig.overlay.last == ("message", c.MSG_BUTTON_RULES)
+    rig.toggle()
+    assert rig.controller.state == c.FINISHING
+    rig.send(ev.Committed(1), ev.Toggle("hotkey"))  # the next one follows the new setting
+    assert len(starts(rig)) == 2
+
+
+def test_the_log_says_which_press_was_not_taken(caplog):
+    with caplog.at_level("INFO", logger="tolmach"):
+        rig = Rig()
+        rig.recorder.button_mic = True
+        rig.send(ev.Toggle("hotkey"))
+        rig = Rig(control="hotkey")
+        rig.toggle()
+    assert "hotkey press not taken: the microphone button starts and stops a dictation" in caplog.text
+    assert "button press not taken: the hotkey starts and stops a dictation" in caplog.text
+
+
+# --- a notice must not take the overlay away from a dictation in progress: a microphone that is
+# --- open with nothing on the screen to say so is the worst the overlay can do
+
+
+def test_a_notice_during_a_recording_goes_back_to_what_was_said_so_far():
+    rig = Rig()
+    rig.recorder.button_mic = True
+    rig.toggle()
+    rig.send(ev.Toggle("hotkey"))                   # the hint about the button, before a word was said
+    assert rig.overlay.last == ("message", c.MSG_BUTTON_RULES)
+    assert rig.overlay.back_to[-1] == c.MSG_LISTENING
+    rig.speak(1)
+    rig.send(ev.Phrase(1, "Привет."), ev.Toggle("hotkey"))
+    assert rig.overlay.back_to[-1] == "Привет."
+
+
+def test_a_notice_about_the_dictation_before_goes_back_to_the_one_being_recorded():
+    rig = Rig()
+    rig.dictate(1)
+    rig.toggle()
+    rig.speak(2)
+    rig.send(ev.Phrase(2, "вторая"), ev.Committed(1))
+    assert rig.overlay.last == ("message", c.MSG_NOTHING)
+    assert rig.overlay.back_to[-1] == "вторая"
+
+
+def test_a_notice_while_a_text_waits_to_be_typed_goes_back_to_that():
+    rig = Rig()
+    rig.dictate(1, "текст")
+    rig.streams.fail = True
+    rig.toggle()                                    # a new dictation that cannot start
+    assert rig.overlay.last == ("message", c.MSG_GATEWAY_DOWN)
+    assert rig.overlay.back_to[-1] == c.MSG_PASTING
+
+
+def test_a_notice_with_nothing_in_progress_goes_away():
+    rig = Rig()
+    rig.send(ev.InsertLast("hotkey"))               # nothing to insert yet
+    rig.toggle()
+    rig.speak(1)
+    rig.send(ev.Cancel("hotkey"))                   # cancelled
+    rig.dictate(2)
+    rig.send(ev.Committed(2))                       # nothing recognised
+    assert rig.overlay.messages() == [c.MSG_NO_LAST_TEXT, c.MSG_CANCELLED, c.MSG_NOTHING]
+    assert rig.overlay.back_to == [None, None, None]
+
+
+# --- the button's microphone is pulled out in the middle of a dictation it began: there is no button
+# --- left to end it with, and nothing to listen again with
+
+
+def test_with_the_buttons_microphone_gone_a_cancel_is_for_good():
+    rig = Rig()
+    started_with_the_button(rig)
+    rig.recorder.button_mic = False                 # unplugged
+    rig.send(ev.Cancel("overlay"))
+    assert rig.controller.state == c.IDLE
+    assert rig.overlay.last == ("message", c.MSG_CANCELLED)
+    assert len(starts(rig)) == 1
+    assert rig.muter.calls == ["mute", "unmute"]
+    assert rig.paster.pasted == []
+
+
+def test_with_the_buttons_microphone_gone_the_hotkey_ends_the_dictation():
+    rig = Rig()                                     # control: "auto"
+    started_with_the_button(rig)
+    rig.recorder.button_mic = False
+    rig.send(ev.Toggle("hotkey"))
+    assert rig.controller.state == c.FINISHING
+    assert c.MSG_BUTTON_RULES not in rig.overlay.messages()
+    rig.send(ev.Committed(1))
+    assert rig.paster.pasted == ["не то "]          # what was said before the microphone went
+
+
+def test_set_to_the_button_the_hotkey_stays_out_even_then_and_the_cross_ends_it():
+    rig = Rig(control="button")
+    started_with_the_button(rig)
+    rig.recorder.button_mic = False
+    rig.send(ev.Toggle("hotkey"))
+    assert rig.controller.state == c.RECORDING
+    assert rig.overlay.last == ("message", c.MSG_BUTTON_RULES)
+    rig.send(ev.Cancel("overlay"))
+    assert rig.controller.state == c.IDLE
+
+
+def test_a_microphone_plugged_back_in_is_the_buttons_again():
+    rig = Rig()
+    started_with_the_button(rig)
+    rig.recorder.button_mic = False
+    rig.recorder.button_mic = True                  # and back before anything was pressed
+    rig.send(ev.Toggle("hotkey"))
+    assert rig.controller.state == c.RECORDING
+    rig.send(ev.Cancel("hotkey"))
+    assert len(starts(rig)) == 2                    # listening again, as ever
+
+
+def test_a_buttons_microphone_plugged_in_meanwhile_does_not_take_over_a_dictation_on_another():
+    rig = Rig()
+    rig.send(ev.Toggle("hotkey"))
+    rig.speak(1)
+    rig.recorder.button_mic = True                  # the next dictation would come from it; this one does not
+    rig.send(ev.Toggle("hotkey"))
+    assert rig.controller.state == c.FINISHING
+    assert c.MSG_BUTTON_RULES not in rig.overlay.messages()

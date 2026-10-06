@@ -23,7 +23,7 @@ def single_instance():
 
 
 def publish_pid() -> None:
-    """Say which process holds the lock, so that tray.cmd can restart exactly this tray.
+    """Say which process holds the lock, so that tolmach.cmd can restart exactly this tray.
     Best effort: a tray that cannot write the file still runs."""
     try:
         paths.tray_file().write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
@@ -57,7 +57,7 @@ def main() -> None:
     except Exception:
         # A missing library after an update: under pythonw this would be a tray that
         # never appears, with nothing anywhere to say why.
-        log.exception("tray could not start: run tray.cmd, it checks and installs the libraries")
+        log.exception("tray could not start: run tolmach.cmd, it checks and installs the libraries")
         withdraw_pid()
         lock.close()
         raise

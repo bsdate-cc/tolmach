@@ -1,4 +1,4 @@
-"""Startup checks behind tray.cmd: every check is a function that prints nothing and
+"""Startup checks behind tolmach.cmd: every check is a function that prints nothing and
 returns a CheckResult; run_checks walks them in order; main() is the console.
 
 No third-party import at import time, directly or through what this module imports:
@@ -347,7 +347,7 @@ def plan_stop(lock_held: bool, pid: int | None) -> tuple[str, str]:
         return "nothing", ""
     if pid is None:
         return "refuse", ("the running tray did not publish its process number (an older version started it) - "
-                          "close it from its menu (Exit) and run tray.cmd again")
+                          "close it from its menu (Exit) and run tolmach.cmd again")
     return "kill", ""
 
 
@@ -388,7 +388,7 @@ def stop_everything(say: Callable[[str], None]) -> bool:
     return True
 
 
-# ---- the console (tray.cmd -> python -m tolmach.tray.startup) ----
+# ---- the console (tolmach.cmd -> python -m tolmach.tray.startup) ----
 
 def ask_yes(prompt: str, default: bool = True, input_fn=input, isatty: bool | None = None) -> bool:
     """Y/n. A stdin that is not a console answers no without blocking: nothing is
@@ -476,7 +476,7 @@ def offer_models(say: Callable[[str], None], *, gateway: config.GatewayConfig | 
         say(f"        into {folder} and name them in config.json (gateway.model): README.md, Models.")
         return False
     if not (models.ensure if ensure is None else ensure)(folder, say, tuple(wanted)):
-        say("        The download did not finish. Run tray.cmd again to retry; where the files come from")
+        say("        The download did not finish. Run tolmach.cmd again to retry; where the files come from")
         say("        and how to put them in place by hand: README.md, Models.")
         return False
     return True
@@ -517,7 +517,7 @@ def banner() -> str:
 
 def main(argv: list[str] | None = None) -> int:
     """Print each step, offer repairs, start the tray, close. Always returns 0: this
-    function holds its own window; tray.cmd's `|| pause` is only for 'python blew up'.
+    function holds its own window; tolmach.cmd's `|| pause` is only for 'python blew up'.
     With --install-requirements (the tray's update hands over to this window) the
     libraries are installed first, without questions."""
     args = sys.argv[1:] if argv is None else argv
@@ -534,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
         carried.append(text)
 
     migrate_legacy(announce)  # before the log: opening it creates the data folder
-    slog = _Log("tray.cmd")
+    slog = _Log("tolmach.cmd")
     for line in carried:
         slog.line(line)
 
@@ -566,7 +566,7 @@ def main(argv: list[str] | None = None) -> int:
         if not install_requirements(root, say):
             slog.line("update: libraries not installed; tray not started")
             say(f"\nLog: {slog.path}")
-            hold("The libraries were not installed - the tray was NOT started. To try again: tray.cmd")
+            hold("The libraries were not installed - the tray was NOT started. To try again: tolmach.cmd")
             return 0
     elif tray_running():
         pid = read_tray_pid()

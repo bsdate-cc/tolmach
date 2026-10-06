@@ -1,6 +1,6 @@
 """Events of the client queue and the two errors a start can hit.
 
-Producers (button, hotkey, menu, recorder, gateway stream, ticker) only put
+Producers (button, hotkeys, menu, overlay, recorder, gateway stream, ticker) only put
 these on the queue; the controller is the only consumer.
 """
 from __future__ import annotations
@@ -28,6 +28,12 @@ class Toggle:
 class InsertLast:
     """Put the last recognised text into the window in front once more."""
     source: str  # "hotkey" | "menu"
+
+
+@dataclass(frozen=True)
+class Cancel:
+    """Drop the dictation in progress: nothing of it is typed or kept."""
+    source: str  # "hotkey" | "overlay"
 
 
 @dataclass(frozen=True)

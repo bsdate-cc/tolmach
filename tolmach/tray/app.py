@@ -17,6 +17,7 @@ import pystray
 from tolmach import APP_NAME, VERSION, config, i18n, keyfile, paths, terms
 from tolmach.client import overlay, paste
 from tolmach.client.app import ClientApp
+from tolmach.client.hotkey import label as hotkey_label
 from tolmach.i18n import N_, _
 from tolmach.tray import autostart, gatewayctl, icons, relaunch, updater
 
@@ -34,14 +35,16 @@ POSITION_NAMES = {
     "left": N_("Слева"), "center": N_("Посередине"), "right": N_("Справа"),
     "bottom-left": N_("Снизу слева"), "bottom": N_("Снизу"), "bottom-right": N_("Снизу справа"),
 }
+CONTROL_NAMES = {"auto": N_("Авто: кнопка, если она есть у микрофона"), "button": N_("Кнопка микрофона"),
+                 "hotkey": N_("Горячая клавиша")}
 # Each language under its own name, whatever the current one is: the way back must be readable.
 LANGUAGE_NAMES = {"auto": N_("Авто / Auto"), "ru": N_("Русский"), "en": "English"}
 UPDATE_QUESTION = N_("Обновить Толмач до версии {version} и перезапустить?\n\n"
                      "Трей и шлюз перезапустятся; идущая диктовка будет прервана.")
 GATEWAY_STUCK = N_("Шлюз не остановился — перезапуск отменён.\n\n"
-                   "Остановите его из меню («Остановить шлюз») и повторите, или запустите tray.cmd.")
+                   "Остановите его из меню («Остановить шлюз») и повторите, или запустите tolmach.cmd.")
 RESTART_FAILED = N_("Не удалось запустить новый трей — перезапуск отменён, работает прежний.\n\n"
-                    "Причина — в журнале (tray.log). Перезапустить можно через tray.cmd.")
+                    "Причина — в журнале (tray.log). Перезапустить можно через tolmach.cmd.")
 CHECK_UPDATES = N_("Проверить обновления")
 EXIT_QUESTION = N_("Остановить шлюз тоже?\n\n"
                    "Да — остановить шлюз и закрыть значок.\n"
@@ -50,6 +53,11 @@ EXIT_QUESTION = N_("Остановить шлюз тоже?\n\n"
 
 def _title() -> str:
     return f"{_(APP_NAME)} {VERSION}"
+
+
+def _with_key(text: str, hotkey: str) -> str:
+    """A menu row with its hotkey on the right, the way menus show a shortcut; none, no column."""
+    return f"{text}\t{hotkey_label(hotkey)}" if hotkey else text
 
 
 def _menu_action(fn):
@@ -92,6 +100,7 @@ class TrayApp:
         # Re-entrant: taking an update asks origin again from the same thread.
         self._update_lock = threading.RLock()
         self._client = ClientApp(on_state=lambda state: self.refresh())
+        self._button_rules = False   # whether the microphone button starts a dictation now; kept by refresh()
         self.icon = pystray.Icon("Tolmach", icons.image(icons.DOWN), _title(), menu=self._menu())
 
     # -- menu ---------------------------------------------------------------
@@ -101,14 +110,17 @@ class TrayApp:
         # language of that moment.
         item, menu = pystray.MenuItem, pystray.Menu
         return menu(
-            item(lambda i: _("Остановить диктовку") if self._client.state == "recording" else _("Начать диктовку"),
-                 _menu_action(self._toggle)),
+            item(lambda i: self._dictation_row(), _menu_action(self._toggle)),
             item(lambda i: _("Скопировать последний текст"), _menu_action(self._copy_last),
                  enabled=lambda i: bool(self._client.last_text)),
-            item(lambda i: _("Вставить последний текст"), _menu_action(self._insert_last),
+            item(lambda i: _with_key(_("Вставить последний текст"), self._client.hotkeys["insert_last"]),
+                 _menu_action(self._insert_last),
                  enabled=lambda i: bool(self._client.last_text)),
             menu.SEPARATOR,
             item(lambda i: _("Микрофон"), menu(self._microphones)),
+            # Nothing to choose without a button - unless the setting says "button": then the way back.
+            item(lambda i: _("Управление диктовкой"), menu(self._controls),
+                 visible=lambda i: self._client.button_found or self._cfg.client.control == "button"),
             item(lambda i: _("Положение окошка"), menu(self._positions)),
             item(lambda i: _("Язык / Language"), menu(self._languages)),
             item(lambda i: _("Глушить другие программы при записи"), _menu_action(self._toggle_mute),
@@ -137,6 +149,13 @@ class TrayApp:
             item(lambda i: _("Выход…"), _menu_action(self._exit)),
         )
 
+    def _dictation_row(self) -> str:
+        """Start or stop, and what does it besides this row: the hotkey, or the microphone button."""
+        text = _("Остановить диктовку") if self._client.state == "recording" else _("Начать диктовку")
+        if self._button_rules:
+            return f"{text}\t{_('Кнопка микрофона')}"
+        return _with_key(text, self._client.hotkeys["dictation"])
+
     def _microphones(self):
         """Submenu rows: rebuilt on every update_menu() from the cached device list."""
         current = self._cfg.client.microphone.lower()
@@ -146,6 +165,16 @@ class TrayApp:
             yield pystray.MenuItem(name, _menu_action(self._pick_microphone(name)),
                                    checked=lambda i, name=name: bool(current) and current in name.lower(),
                                    radio=True)
+
+    def _controls(self):
+        """Submenu rows: what starts and stops a dictation. Not to be changed while one is
+        being recorded: it ends the way it began."""
+        current = self._cfg.client.control
+        free = self._client.state != "recording"
+        for control in config.CONTROLS:
+            yield pystray.MenuItem(_(CONTROL_NAMES[control]), _menu_action(self._pick_control(control)),
+                                   checked=lambda i, control=control: control == current, radio=True,
+                                   enabled=free)
 
     def _positions(self):
         """Submenu rows: where the overlay sits on the monitor."""
@@ -191,6 +220,11 @@ class TrayApp:
     def _pick_microphone(self, name: str):
         def pick(icon, item) -> None:
             self._edit_config(lambda cfg: replace(cfg, client=replace(cfg.client, microphone=name)))
+        return pick
+
+    def _pick_control(self, control: str):
+        def pick(icon, item) -> None:
+            self._edit_config(lambda cfg: replace(cfg, client=replace(cfg.client, control=control)))
         return pick
 
     def _pick_position(self, position: str):
@@ -374,6 +408,7 @@ class TrayApp:
                 i18n.set_language(self._cfg.language)
                 if self.icon.title != _title():
                     self.icon.title = _title()
+                self._button_rules = self._client.button_rules()
                 state = gatewayctl.glance(self._client.state, self._health)
                 if state != self._shown:
                     self._shown = state
@@ -381,7 +416,8 @@ class TrayApp:
                 # The menu lambdas read these same values; the native menu is rebuilt only when one changes.
                 shown = (self._client.state, bool(self._client.last_text), self._client.button_found,
                          self._cfg.client.microphone, self._cfg.client.mute_other_apps, self._cfg.autostart,
-                         self._cfg.client.overlay_position,
+                         self._cfg.client.overlay_position, self._cfg.client.control,
+                         self._button_rules, tuple(self._client.hotkeys.items()),
                          self._update_line(), self._update.note, self._check_line(), self._update.kind,
                          self._stale, i18n.language(), self._cfg.language,
                          self._config_bad, gatewayctl.status_line(self._health), self._health is None,

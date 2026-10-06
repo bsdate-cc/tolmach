@@ -61,12 +61,23 @@ def test_tk_geometry_spells_a_negative_offset_with_plus_minus():
 class FakeRoot:
     def __init__(self):
         self.calls = []
+        self.jobs = {}          # what is to be done later, by the number it was given
+        self.cancelled = []
 
     def after_cancel(self, job):
-        pass
+        self.cancelled.append(job)
+        self.jobs.pop(job, None)
 
     def after(self, ms, fn):
-        return "job"
+        job = len(self.jobs) + len(self.cancelled) + 1
+        self.jobs[job] = fn
+        return job
+
+    def later(self):
+        """Time passes: whatever was put off is done now."""
+        jobs, self.jobs = self.jobs, {}
+        for fn in jobs.values():
+            fn()
 
     def withdraw(self):
         self.calls.append("withdraw")
@@ -94,8 +105,18 @@ class FakeRoot:
 
 
 class FakeLabel:
+    def __init__(self):
+        self.calls = []
+        self.text = None
+
     def config(self, **kwargs):
-        pass
+        self.text = kwargs.get("text", self.text)
+
+    def grid(self):
+        self.calls.append("grid")
+
+    def grid_remove(self):
+        self.calls.append("grid_remove")
 
 
 class NoTk:
@@ -116,7 +137,7 @@ def overlay_on(monkeypatch, work_areas, target=0):
     monkeypatch.setattr(ov, "_work_area", work_area)
     overlay = ov.Overlay(target_window=lambda: target)
     overlay._thread.join(2.0)
-    overlay._root, overlay._label = FakeRoot(), FakeLabel()
+    overlay._root, overlay._label, overlay._cross = FakeRoot(), FakeLabel(), FakeLabel()
     return overlay, asked
 
 
@@ -168,3 +189,64 @@ def test_a_window_already_in_place_is_not_moved_again(monkeypatch):
     overlay, _ = overlay_on(monkeypatch, {0: PRIMARY})
     overlay._apply("show", "Слушаю…", 0.0)
     assert [call for call in overlay._root.calls if call[0] == "geometry"] == [("geometry", "+1030+650")]
+
+
+# --- the cross is there while something can be cancelled, and gone on a notice
+
+
+def test_what_is_in_progress_carries_the_cross_and_a_notice_does_not(monkeypatch):
+    overlay, _ = overlay_on(monkeypatch, {0: PRIMARY})
+    overlay._apply("show", "Слушаю…", 0.0)
+    assert overlay._cross.calls == ["grid"]
+    overlay._apply("message", "Отменено", 1.5)
+    assert overlay._cross.calls == ["grid", "grid_remove"]
+    overlay._apply("show", "Вставляю…", 0.0)
+    assert overlay._cross.calls == ["grid", "grid_remove", "grid"]
+
+
+def test_the_cross_is_set_before_the_window_is_measured_and_placed(monkeypatch):
+    # The cross changes the width of the window: placing first would leave it off its spot.
+    overlay, _ = overlay_on(monkeypatch, {0: PRIMARY})
+    order = []
+    overlay._cross.grid = lambda: order.append("cross")
+    overlay._root.geometry = lambda spec: order.append("placed")
+    overlay._apply("show", "Слушаю…", 0.0)
+    assert order[:2] == ["cross", "placed"]
+
+
+# --- a notice goes away - back to what is in progress, if something is
+
+
+def test_a_notice_that_has_been_read_goes_back_to_what_is_in_progress(monkeypatch):
+    overlay, _ = overlay_on(monkeypatch, {0: PRIMARY})
+    overlay._apply("show", "Привет.", 0.0)
+    overlay._apply("message", "Диктовкой управляет кнопка микрофона", 2.0, "Привет.")
+    assert overlay._label.text == "Диктовкой управляет кнопка микрофона"
+    assert overlay._cross.calls[-1] == "grid_remove"
+    overlay._root.later()
+    assert overlay._label.text == "Привет."
+    assert overlay._cross.calls[-1] == "grid"                 # and its cross is back
+    assert "withdraw" not in overlay._root.calls
+
+
+def test_a_notice_with_nothing_in_progress_hides_the_window(monkeypatch):
+    overlay, _ = overlay_on(monkeypatch, {0: PRIMARY})
+    overlay._apply("message", "Отменено", 1.5)
+    overlay._root.later()
+    assert overlay._root.calls[-1] == "withdraw"
+
+
+def test_what_is_shown_after_a_notice_is_not_undone_when_its_time_comes(monkeypatch):
+    overlay, _ = overlay_on(monkeypatch, {0: PRIMARY})
+    overlay._apply("message", "Ничего не распознано", 3.0, "Слушаю…")
+    overlay._apply("hide", "", 0.0)                           # the dictation ended meanwhile
+    overlay._root.later()
+    assert overlay._root.calls[-1] == "withdraw" and overlay._label.text == "Ничего не распознано"
+
+
+def test_the_way_back_travels_with_the_notice(monkeypatch):
+    overlay, _ = overlay_on(monkeypatch, {0: PRIMARY})
+    overlay.message("Диктовкой управляет кнопка микрофона", 2.0, back_to="Привет.")
+    overlay._poll()
+    overlay._root.later()                                     # the next poll and the end of the notice
+    assert overlay._label.text == "Привет."

@@ -69,12 +69,14 @@ class FakeStreams:
 class FakeOverlay:
     def __init__(self):
         self.calls = []
+        self.back_to = []       # for every message: what the overlay goes back to when it has been read
 
     def show(self, text):
         self.calls.append(("show", text))
 
-    def message(self, text, seconds):
+    def message(self, text, seconds, back_to=None):
         self.calls.append(("message", text))
+        self.back_to.append(back_to)
 
     def hide(self):
         self.calls.append(("hide",))

@@ -204,3 +204,24 @@ def test_the_hotkey_for_inserting_the_last_text_has_a_default_and_can_be_switche
     write(json.dumps({"client": {"insert_last_hotkey": ""}}))
     loaded = config.load()
     assert loaded.problems == [] and loaded.config.client.insert_last_hotkey == ""
+
+
+def test_the_key_that_cancels_a_dictation_is_esc_and_can_be_changed_or_switched_off():
+    assert config.load().config.client.cancel_hotkey == "esc"
+    write(json.dumps({"client": {"cancel_hotkey": "ctrl+esc"}}))
+    assert config.load().config.client.cancel_hotkey == "ctrl+esc"
+    write(json.dumps({"client": {"cancel_hotkey": ""}}))
+    loaded = config.load()
+    assert loaded.problems == [] and loaded.config.client.cancel_hotkey == ""
+
+
+def test_what_starts_a_dictation_is_decided_by_the_microphone_unless_chosen():
+    assert config.load().config.client.control == "auto"
+    for choice in ("button", "hotkey", "auto"):
+        write(json.dumps({"client": {"control": choice}}))
+        loaded = config.load()
+        assert loaded.problems == [] and loaded.config.client.control == choice
+    write(json.dumps({"client": {"control": "voice"}}))
+    loaded = config.load()
+    assert loaded.config.client.control == "auto"
+    assert [p.where for p in loaded.problems] == ["client.control"]

@@ -17,6 +17,8 @@ speech. Its tray menu, dialogs and overlay are available in Russian and English.
   is typed into the window you were working in. The text is typed as keystrokes, so it also reaches a
   remote desktop window, and the clipboard is left alone.
 - **Punctuation and numbers** come from the model itself: "сорок минут" becomes "40 минут".
+- **Cancel:** said the wrong thing? `Esc` or the cross on the overlay drops the dictation, and
+  nothing is typed.
 - **The last text again:** `Shift+Win+Z` types the last recognised text once more; the menu can also
   copy it.
 - **A terms dictionary:** `Githab`, `GetHub` and `в гитхабе` are written `GitHub` once the word is
@@ -48,17 +50,17 @@ second before its first word and ends after the pause that closed it.
 ```
 git clone https://github.com/bsdate-cc/tolmach.git
 cd tolmach
-tray.cmd
+tolmach.cmd
 ```
 
-`tray.cmd` (a double click works too) creates the `.venv` environment and checks Python, the
+`tolmach.cmd` (a double click works too) creates the `.venv` environment and checks Python, the
 libraries, the settings, the models, the microphone and the gateway. Whatever is missing it offers to
 install: the libraries with pip, the models by downloading them. Then it starts the tray. Every step
 is printed in the window and written to a log.
 
 ### Models
 
-The model files are not in the repository. On the first start `tray.cmd` offers to download them
+The model files are not in the repository. On the first start `tolmach.cmd` offers to download them
 (about 330 MB) into `%USERPROFILE%\.tolmach\models`:
 
 | File | What it is |
@@ -89,8 +91,26 @@ yours to put in place.
 2. Press the button on the microphone or `Shift+Win+Q`. The overlay shows "Listening…".
 3. Speak. Press again, and the text is typed.
 
-The tray menu: start and stop dictation, copy or insert the last text, choose the microphone, the
-overlay position and the language, mute other programs, start with Windows, control the gateway, open
+Changed your mind? Press `Esc` or the cross on the overlay before the text is typed: the recording
+is dropped and no sound is kept. Tolmach holds `Esc` only while a dictation is in progress. For that
+while it also puts in a keyboard hook: otherwise `Esc` would never reach it from a window that takes
+the whole keyboard (a remote desktop). The hook looks at one thing, whether the key is the cancel
+key; it does not remember or record any other key. If the
+dictation was started with the microphone button, a cancel drops what was said and Tolmach listens
+again at once: say it the way you meant and press the button. The button is also what ends such a
+dictation - only it can switch the microphone off; say nothing, and nothing is typed.
+
+**What controls dictation.** A microphone with a button is switched on and off by that button only.
+So when the recording comes from such a microphone, the button starts and stops a dictation, and the
+hotkey and the menu item do nothing - the overlay says "The microphone button starts and stops
+dictation". With any other microphone the hotkey and the menu item work. That is the "Auto" mode;
+the menu "Dictation control" lets you choose yourself: "Microphone button" or "Hotkey". With the
+second, the button only switches the microphone itself. The menu is there when a microphone with a
+button is connected, and what controls dictation right now is written to the right of "Start
+dictation".
+
+The tray menu: start and stop dictation, copy or insert the last text, choose the microphone, what
+controls dictation, the overlay position and the language, mute other programs, start with Windows, control the gateway, open
 the logs, update.
 
 **The microphone button.** USB microphones whose button reports a press over HID (the Consumer
@@ -141,8 +161,10 @@ you meant something else: `питон` always becomes `Python`.
 |---|---|---|
 | `language` | `auto` | language of the menu, dialogs and overlay: `ru`, `en`, or `auto` (Russian when Windows or its regional format is Russian, English otherwise) |
 | `client.microphone` | `""` | microphone name; empty means the microphone with the button, else the system default |
+| `client.control` | `auto` | what starts and stops a dictation: `button` - the microphone button, `hotkey` - the hotkey and the menu, `auto` - the button when the recording comes from a microphone with a button, the hotkey otherwise |
 | `client.hotkey` | `shift+win+q` | the dictation hotkey |
 | `client.insert_last_hotkey` | `shift+win+z` | types the last recognised text again; `""` switches it off |
+| `client.cancel_hotkey` | `esc` | cancels a dictation; the key is held only while one is in progress; `""` switches it off |
 | `client.insert_mode` | `type` | `type`: keystrokes; `paste`: the clipboard and Ctrl+V |
 | `client.append_space` | `true` | a space after the inserted text |
 | `client.overlay_position` | `center` | where the overlay sits: `top-left` … `center` … `bottom-right` |
@@ -153,7 +175,7 @@ you meant something else: `питон` always becomes `Python`.
 
 All settings and their defaults are in `tolmach/config.py`.
 
-The two hotkeys and the button identifiers (`client.button`) are read when the tray starts; the other
+The hotkeys and the button identifiers (`client.button`) are read when the tray starts; the other
 `client` settings take effect with the next dictation.
 
 ## Where things are

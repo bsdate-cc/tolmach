@@ -65,11 +65,21 @@ def test_no_activate_falls_back_to_winfo_id_when_no_parent(monkeypatch):
 
 
 class FakeLabel:
+    made = []
+
     def __init__(self, *a, **k):
+        self.text = k.get("text", "")
+        self.bound = {}
+        FakeLabel.made.append(self)
+
+    def grid(self, **k):
         pass
 
-    def pack(self):
+    def grid_remove(self):
         pass
+
+    def bind(self, sequence, handler):
+        self.bound[sequence] = handler
 
     def config(self, **k):
         pass
@@ -152,3 +162,41 @@ def test_tk_failure_is_logged_and_does_not_escape_the_thread(monkeypatch, caplog
     assert errors == []
     assert any("overlay" in r.getMessage() for r in caplog.records)
     overlay.close()  # must not hang or raise
+
+
+# --- the cross: a click on it asks to cancel what is in progress
+
+
+def overlay_with_a_cross(monkeypatch, on_cancel):
+    FakeLabel.made = []
+    monkeypatch.setattr(ov, "tk", FakeTkModule([]))
+    monkeypatch.setattr(ov, "user32", FakeUser32())
+    overlay = ov.Overlay(on_cancel=on_cancel)
+    overlay.show("Слушаю…")
+    deadline = time.monotonic() + 2
+    while len(FakeLabel.made) < 2 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    crosses = [label for label in FakeLabel.made if label.text == ov.CROSS]
+    assert len(crosses) == 1
+    return overlay, crosses[0]
+
+
+def test_a_click_on_the_cross_asks_to_cancel(monkeypatch):
+    asked = []
+    overlay, cross = overlay_with_a_cross(monkeypatch, lambda: asked.append("cancel"))
+    cross.bound["<Button-1>"](None)
+    overlay.close()
+    assert asked == ["cancel"]
+
+
+def test_a_cancel_that_fails_is_logged_and_the_window_lives_on(monkeypatch, caplog):
+    def broken():
+        raise RuntimeError("the queue is gone")
+
+    overlay, cross = overlay_with_a_cross(monkeypatch, broken)
+    with caplog.at_level(logging.ERROR, logger="tolmach"):
+        cross.bound["<Button-1>"](None)
+    assert overlay._thread.is_alive()
+    assert any("cross" in r.getMessage() for r in caplog.records)
+    overlay.close()
+    assert not overlay._thread.is_alive()
