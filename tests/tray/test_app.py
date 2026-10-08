@@ -1,4 +1,5 @@
 import http.client
+import logging
 import threading
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pytest
 from tolmach import paths
 from tolmach.tray import app as tray_app
 from tolmach.tray import gatewayctl
+from tolmach.tray.models import ModelFile
 
 OK = gatewayctl.Health("ok", "gigaam-v3", "", 1)
 
@@ -362,3 +364,125 @@ def test_what_starts_a_dictation_is_offered_only_when_there_is_a_button(tray):
 def test_set_to_the_button_with_no_button_the_way_back_stays_in_the_menu(tray):
     tray_app.paths.config_file().write_text('{"client": {"control": "button"}}', encoding="utf-8")
     assert "Управление диктовкой" in shown_rows(tray)
+
+
+# --- the English model
+
+SMALL = (ModelFile("parakeet-unified-en/encoder.int8.onnx", "https://example.invalid/encoder", 300, "0" * 64),
+         ModelFile("parakeet-unified-en/tokens.txt", "https://example.invalid/tokens", 100, "0" * 64))
+
+
+@pytest.fixture
+def english(tray, monkeypatch):
+    """The tray with its icon up. The English model is two small files here, and what downloads
+    them is the test."""
+    monkeypatch.setattr(tray_app.models, "ENGLISH", SMALL)
+    tray._ready = True
+    return tray
+
+
+def _english_row(tray):
+    return next(item for item in tray.icon.menu.items if "модель" in item.text or "model" in item.text)
+
+
+def test_the_menu_offers_to_download_the_english_model_and_says_how_large_it_is(english):
+    row = _english_row(english)
+    assert row.text == "Английская модель: скачать (663 МБ)" and row.enabled and row.visible
+
+
+def test_the_english_model_is_downloaded_from_the_menu_and_the_row_follows(english, monkeypatch):
+    seen = []
+
+    def ensure(folder, say, files, tick):
+        assert folder == paths.models_dir() and files == SMALL
+        seen.append((_english_row(english).text, _english_row(english).enabled))     # begun, and nothing has come yet
+        tick(100)
+        seen.append(_english_row(english).text)
+        tick(300)
+        seen.append(_english_row(english).text)                                         # all of it has come, not yet in place
+        for file in files:
+            path = folder / file.path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * file.size)
+        return True
+
+    monkeypatch.setattr(tray_app.models, "ensure", ensure)
+    english.refresh()
+    before = english.icon.menu_updates
+    english._fetch_english(english.icon, None)
+    assert seen == [("Английская модель: скачивается, 0 %", False), "Английская модель: скачивается, 25 %",
+                    "Английская модель: скачивается, 99 %"]
+    row = _english_row(english)
+    assert row.text == "Английская модель: установлена" and not row.enabled
+    # The menu is built anew when the download begins and when it ends - not at every percent: the row is
+    # read by the look the tray takes every few seconds, and a menu that is open is not torn down under the hand.
+    assert english.icon.menu_updates == before + 2
+
+
+def test_a_download_that_failed_is_said_in_the_row_and_can_be_tried_again(english, monkeypatch, caplog):
+    monkeypatch.setattr(tray_app.models, "ensure",
+                        lambda folder, say, files, tick: say("  FAILED: tokens.txt: the server answered 404") or False)
+    with caplog.at_level(logging.INFO, logger="tolmach"):
+        english._fetch_english(english.icon, None)
+    row = _english_row(english)
+    assert row.text == "Английская модель: не скачалась — повторить" and row.enabled
+    assert "the English model: FAILED: tokens.txt: the server answered 404" in caplog.text
+
+
+def test_a_download_that_blows_up_does_not_leave_the_row_downloading(english, monkeypatch, caplog):
+    def ensure(folder, say, files, tick):
+        raise RuntimeError("the disk is full")
+
+    monkeypatch.setattr(tray_app.models, "ensure", ensure)
+    with caplog.at_level(logging.ERROR, logger="tolmach"):
+        english._fetch_english(english.icon, None)
+    assert _english_row(english).text == "Английская модель: не скачалась — повторить" and "the disk is full" in caplog.text
+
+
+def test_a_second_click_while_the_model_is_being_downloaded_starts_nothing(english, monkeypatch):
+    calls = []
+
+    def ensure(folder, say, files, tick):
+        calls.append(1)
+        english._fetch_english(english.icon, None)           # the click again, in the middle of the first
+        return False
+
+    monkeypatch.setattr(tray_app.models, "ensure", ensure)
+    english._fetch_english(english.icon, None)
+    assert calls == [1]
+
+
+def test_settings_without_the_english_model_have_no_row_for_it(english):
+    paths.config_file().write_text('{"gateway": {"extra_models": []}}', encoding="utf-8")
+    english.refresh()
+    assert not _english_row(english).visible
+
+
+def test_the_row_of_the_english_model_follows_the_language(english):
+    paths.config_file().write_text('{"language": "en"}', encoding="utf-8")
+    english.refresh()
+    assert _english_row(english).text == "English model: download (663 MB)"
+
+
+def test_whatever_goes_wrong_before_the_download_begins_does_not_leave_the_row_downloading(english, monkeypatch, caplog):
+    def no_folder():
+        raise PermissionError("the folder of the models cannot be made")
+
+    folder = paths.models_dir()
+    monkeypatch.setattr(tray_app.paths, "models_dir", no_folder)
+    with caplog.at_level(logging.ERROR, logger="tolmach"):
+        english._fetch_english(english.icon, None)
+    monkeypatch.setattr(tray_app.paths, "models_dir", lambda: folder)
+    row = _english_row(english)
+    assert row.text == "Английская модель: не скачалась — повторить" and row.enabled and "cannot be made" in caplog.text
+
+
+def test_a_tray_that_starts_clears_away_the_half_of_a_download_it_was_closed_in_the_middle_of(monkeypatch, request):
+    monkeypatch.setattr(tray_app.models, "ENGLISH", SMALL)
+    folder = paths.models_dir() / "parakeet-unified-en"
+    folder.mkdir(parents=True)
+    half, whole, other = folder / "encoder.int8.onnx.k3j2h1.part", folder / "tokens.txt", folder / "notes.part"
+    for path in (half, whole, other):
+        path.write_bytes(b"x" * 100)
+    request.getfixturevalue("tray")                                      # the tray starts
+    assert not half.exists() and whole.exists() and other.exists()       # only what a download of these files left

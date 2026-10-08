@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tolmach import paths
+from tolmach import config, paths
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +60,27 @@ def real_models():
 
 
 DATA = Path(__file__).parent / "data"
+
+
+@pytest.fixture
+def english_model(real_models):
+    """The English model among the real model files, or skip: the tray menu downloads it."""
+    model = config.english_model()
+    if not all((real_models / getattr(model, role)).is_file() for role in ("encoder", "decoder", "joiner", "tokens")):
+        pytest.skip(f"the English model is not in {real_models}")
+    for role in ("encoder", "decoder", "joiner", "tokens"):
+        setattr(model, role, str(real_models / getattr(model, role)))
+    return model
+
+
+@pytest.fixture
+def english_wav():
+    """A few seconds of English speech, 16 kHz mono: the sample that comes with the model
+    (test_wavs/0.wav of its page). Not in the repository; without it the test is skipped."""
+    path = Path(__file__).parent / "data" / "english.wav"
+    if not path.is_file():
+        pytest.skip(f"no {path}")
+    return path
 
 
 @pytest.fixture

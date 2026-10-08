@@ -253,3 +253,29 @@ def test_the_recognition_model_comes_from_one_fixed_revision():
         if "huggingface.co" in file.url:
             assert f"/resolve/{models.GIGAAM_REVISION}/" in file.url
             assert len(models.GIGAAM_REVISION) == 40
+
+
+# --- the English model: nobody needs it to dictate, so it is fetched only when asked for
+
+
+def test_the_english_model_is_the_one_the_default_settings_describe():
+    english = config.english_model()
+    assert {file.path for file in models.ENGLISH} == {english.encoder, english.decoder, english.joiner, english.tokens}
+    assert not {file.path for file in models.ENGLISH} & {file.path for file in models.FILES}     # the launcher never offers it
+    assert models.ENGLISH_MB == 663
+
+
+def test_the_english_model_is_pinned_like_the_main_one():
+    for file in models.ENGLISH:
+        assert file.url.startswith("https://huggingface.co/") and f"/resolve/{models.PARAKEET_REVISION}/" in file.url
+        assert file.size > 0 and len(file.sha256) == 64 and int(file.sha256, 16) >= 0
+    assert len(models.PARAKEET_REVISION) == 40
+
+
+def test_whoever_downloads_can_count_the_bytes_as_they_arrive(site, folder, monkeypatch):
+    monkeypatch.setattr(models, "CHUNK", 100_000)
+    first = site.offer("/a.onnx", BODY, "en/a.onnx")
+    second = site.offer("/b.txt", b"tokens" * 10, "en/b.txt")
+    counted = []
+    assert models.ensure(folder, lambda line: None, (first, second), counted.append) is True
+    assert sum(counted) == len(BODY) + 60 and len(counted) >= 10

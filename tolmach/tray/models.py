@@ -27,6 +27,12 @@ from typing import Callable, Iterable, NamedTuple
 GIGAAM_REVISION = "6888903da215c7735f51101d939f3bfa679fb2b8"
 _GIGAAM = f"https://huggingface.co/Smirnov75/GigaAM-v3-sherpa-onnx/resolve/{GIGAAM_REVISION}/"
 _SILERO = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+# Parakeet (NVIDIA, the "unified" English model of 0.6 billion parameters; NVIDIA Open Model
+# License) in eight bits, exported to ONNX by the authors of sherpa-onnx. Nobody needs it to
+# dictate: it is for files in English, and is fetched only when the user asks for it.
+PARAKEET_REVISION = "8c3a10fb13408c7a7054f6898958bf1c64a8d6c7"
+_PARAKEET = ("https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming/"
+             f"resolve/{PARAKEET_REVISION}/")
 
 CHUNK = 1 << 20
 TIMEOUT_S = 60.0
@@ -54,6 +60,18 @@ FILES = (
 )
 TOTAL_MB = round(sum(file.size for file in FILES) / 1e6)
 
+ENGLISH = (
+    ModelFile("parakeet-unified-en/encoder.int8.onnx", _PARAKEET + "encoder.int8.onnx", 654040552,
+              "6716910b7a0833997fec7a410494c995d70124001a0e9b66d6370d6aced577e0"),
+    ModelFile("parakeet-unified-en/decoder.int8.onnx", _PARAKEET + "decoder.int8.onnx", 7257753,
+              "a5e223392c90e75f8144cdb5eb95af7625db389e39edef2bd1a9c872b3298fe6"),
+    ModelFile("parakeet-unified-en/joiner.int8.onnx", _PARAKEET + "joiner.int8.onnx", 1735860,
+              "869f43f7d24595c55581ad3bf249a935fb8a71389fbdaa7504b9f46f93140f8a"),
+    ModelFile("parakeet-unified-en/tokens.txt", _PARAKEET + "tokens.txt", 8952,
+              "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff"),
+)
+ENGLISH_MB = round(sum(file.size for file in ENGLISH) / 1e6)
+
 
 class DownloadError(Exception):
     """A file could not be fetched or is not the expected one; the message is for the console."""
@@ -78,6 +96,13 @@ def missing(models_dir: Path, files: tuple[ModelFile, ...] | None = None) -> lis
         if not ok:
             absent.append(file)
     return absent
+
+
+def clear_leftovers(models_dir: Path, files: tuple[ModelFile, ...]) -> None:
+    """The unfinished files that downloads of these files left behind - of a program that was
+    closed in the middle of one."""
+    for file in files:
+        _clear_leftovers(Path(models_dir) / file.path)
 
 
 def _clear_leftovers(target: Path) -> None:
@@ -108,10 +133,12 @@ def _put_in_place(part: Path, target: Path) -> None:
             time.sleep(0.2)
 
 
-def fetch(file: ModelFile, models_dir: Path, say: Callable[[str], None]) -> None:
+def fetch(file: ModelFile, models_dir: Path, say: Callable[[str], None],
+          tick: Callable[[int], None] | None = None) -> None:
     """Download one file next to its place, check it, then move it in. Raises DownloadError;
     nothing unverified is left behind. The unfinished file has a name of its own: two
-    downloads of one file (two launcher windows) never write into each other."""
+    downloads of one file (two launcher windows) never write into each other. `tick` is told
+    how many bytes each piece that arrived had."""
     target = Path(models_dir) / file.path
     name = target.name
     part = None
@@ -133,6 +160,8 @@ def fetch(file: ModelFile, models_dir: Path, say: Callable[[str], None]) -> None
                 out.write(block)
                 digest.update(block)
                 received += len(block)
+                if tick is not None:
+                    tick(len(block))
                 percent = min(100, received * 100 // file.size) if file.size else 100
                 if percent >= next_mark:
                     say(f"  {name}: {percent}% ({received / 1e6:.0f} of {megabytes:.0f} MB)")
@@ -162,13 +191,14 @@ def fetch(file: ModelFile, models_dir: Path, say: Callable[[str], None]) -> None
                 pass
 
 
-def ensure(models_dir: Path, say: Callable[[str], None], files: tuple[ModelFile, ...] | None = None) -> bool:
+def ensure(models_dir: Path, say: Callable[[str], None], files: tuple[ModelFile, ...] | None = None,
+           tick: Callable[[int], None] | None = None) -> bool:
     """Download every missing file. False as soon as one fails; what was fetched stays."""
     for file in missing(models_dir, files):
         size = f"{file.size / 1e6:.0f} MB" if file.size >= 1e6 else f"{max(1, file.size // 1000)} KB"
         say(f"  downloading {Path(file.path).name} ({size})")
         try:
-            fetch(file, models_dir, say)
+            fetch(file, models_dir, say, tick)
         except DownloadError as e:
             say(f"  FAILED: {e}")
             return False

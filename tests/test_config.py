@@ -225,3 +225,55 @@ def test_what_starts_a_dictation_is_decided_by_the_microphone_unless_chosen():
     loaded = config.load()
     assert loaded.config.client.control == "auto"
     assert [p.where for p in loaded.problems] == ["client.control"]
+
+
+ENGLISH = ("parakeet-unified-en/encoder.int8.onnx", "parakeet-unified-en/decoder.int8.onnx",
+           "parakeet-unified-en/joiner.int8.onnx", "parakeet-unified-en/tokens.txt")
+SECOND = {"name": "second", "language": "de", "encoder": "my/e.onnx", "decoder": "my/d.onnx", "joiner": "my/j.onnx",
+          "tokens": "my/t.txt"}
+
+
+def test_beside_the_main_model_there_is_an_english_one_by_default():
+    gateway = config.load().config.gateway
+    assert gateway.model.language == "ru" and gateway.extra_idle_minutes == 10.0
+    english, = gateway.extra_models
+    assert (english.name, english.language, english.type) == ("parakeet-unified-en", "en", "nemo_transducer")
+    assert (english.encoder, english.decoder, english.joiner, english.tokens) == ENGLISH
+
+
+def test_the_models_beside_the_main_one_are_those_the_file_lists():
+    write(json.dumps({"gateway": {"extra_idle_minutes": 0, "extra_models": [SECOND]}}))
+    loaded = config.load()
+    assert loaded.problems == [] and loaded.config.gateway.extra_idle_minutes == 0.0
+    mine, = loaded.config.gateway.extra_models
+    assert (mine.name, mine.language, mine.type, mine.encoder, mine.tokens) == ("second", "de", "nemo_transducer", "my/e.onnx", "my/t.txt")
+    write(json.dumps({"gateway": {"extra_models": []}}))
+    assert config.load().config.gateway.extra_models == []              # none at all, if the file says so
+    config.save(loaded.config)                                           # and what was read is written back whole
+    assert [m.name for m in config.load().config.gateway.extra_models] == ["second"]
+
+
+def test_a_model_that_is_not_described_whole_is_left_out_and_the_reason_is_said():
+    write(json.dumps({"gateway": {"extra_models": [
+        SECOND, {**SECOND, "name": ""}, {**SECOND, "name": "gigaam-v3"}, dict(SECOND), {**SECOND, "name": "third", "tokens": ""},
+        {**SECOND, "name": "fourth", "encoder": 5}, "fifth", {**SECOND, "name": "sixth", "colour": "red"}]}}))
+    loaded = config.load()
+    assert [m.name for m in loaded.config.gateway.extra_models] == ["second", "sixth"]
+    assert [(p.where, p.message) for p in loaded.problems] == [
+        ("gateway.extra_models[1].name", "a model needs a name, left out"),
+        ("gateway.extra_models[2].name", "this is the name of the main model, left out"),
+        ("gateway.extra_models[3].name", "this name is used already, left out"),
+        ("gateway.extra_models[4].tokens", "the model needs this file, left out"),
+        ("gateway.extra_models[5].encoder", "expected str, default kept"),
+        ("gateway.extra_models[5].encoder", "the model needs this file, left out"),
+        ("gateway.extra_models[6]", "expected an object, left out"),
+        ("gateway.extra_models[7].colour", "unknown key, ignored")]
+
+
+def test_what_is_not_a_list_of_models_keeps_the_english_one():
+    write(json.dumps({"gateway": {"extra_models": {"name": "second"}, "extra_idle_minutes": -1}}))
+    loaded = config.load()
+    assert [m.name for m in loaded.config.gateway.extra_models] == ["parakeet-unified-en"]
+    assert loaded.config.gateway.extra_idle_minutes == 10.0
+    assert [(p.where, p.message) for p in loaded.problems] == [
+        ("gateway.extra_models", "expected a list, default kept"), ("gateway.extra_idle_minutes", "must be >= 0, default kept")]

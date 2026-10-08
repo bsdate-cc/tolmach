@@ -1,4 +1,7 @@
 import asyncio
+import contextlib
+import gc
+import logging
 import os
 import threading
 
@@ -6,7 +9,7 @@ import aiohttp
 import pytest
 
 from tolmach import VERSION
-from tolmach.gateway.app import build_app
+from tolmach.gateway.app import acquired, build_app
 from tolmach.gateway.state import STOP
 from tests.gateway.conftest import AUTH, UPDATE, append_event, wav_bytes
 from tests.gateway.fakes import ScriptedVad, silent, tone
@@ -247,3 +250,132 @@ async def test_cyrillic_in_the_phrases_is_not_escaped(client, recognize):
     recognize.fn = lambda samples: "Привет, мир."
     r = await client.post(URL, data=form(wav_bytes(1.0), response_format="verbose_json"), headers=AUTH)
     assert (await r.text()).count("Привет, мир.") == 2     # in "text" and in the one segment
+
+
+# --- the models beside the main one
+
+MODELS = "/v1/models"
+
+
+async def test_a_file_may_ask_for_another_model(client, shelf):
+    r = await client.post(URL, data=form(wav_bytes(2.0), model="english"), headers=AUTH)
+    assert r.status == 200 and await r.json() == {"text": "english:32000"}
+    assert shelf.loads == ["english"] and shelf.extras.loaded() == "english"
+    r = await client.post(URL, data=form(wav_bytes(1.0), model="english", response_format="verbose_json"), headers=AUTH)
+    assert (await r.json())["segments"][0]["text"] == "english:16000" and shelf.loads == ["english"]     # loaded once
+    shelf.now += 600
+    assert shelf.extras.sweep() == "english"                # the answers are given: nothing holds it in memory
+
+
+async def test_any_other_name_means_the_main_model_as_it_always_did(client, shelf):
+    for name in ("fake", "whisper-1", ""):                  # programs made for other services name models of theirs
+        r = await client.post(URL, data=form(wav_bytes(2.0), model=name), headers=AUTH)
+        assert await r.json() == {"text": "len32000"}, name
+    assert shelf.loads == []
+
+
+async def test_a_model_that_cannot_be_had_is_an_answer_that_says_why(client, shelf, caplog):
+    shelf.missing = {"english"}
+    r = await client.post(URL, data=form(wav_bytes(1.0), model="english"), headers=AUTH)
+    assert r.status == 409 and (await r.json())["error"]["code"] == "model_not_installed" and shelf.loads == []
+    shelf.missing, shelf.broken = set(), RuntimeError("model failed to load: bad file")
+    with caplog.at_level(logging.WARNING, logger="tolmach.gateway"):
+        r = await client.post(URL, data=form(wav_bytes(1.0), model="english"), headers=AUTH)
+    error = (await r.json())["error"]
+    assert r.status == 500 and error["code"] == "model_failed" and "bad file" in error["message"]
+    assert "model english could not be loaded" in caplog.text
+    shelf.broken = None
+    r = await client.post(URL, data=form(wav_bytes(1.0), model="english"), headers=AUTH)
+    assert r.status == 200 and await r.json() == {"text": "english:16000"}     # the gateway goes on, and so does the model
+    r = await client.post(URL, data=form(wav_bytes(1.0)), headers=AUTH)
+    assert await r.json() == {"text": "len16000"}
+
+
+async def test_a_file_that_cannot_be_read_loads_no_model(client, shelf):
+    r = await client.post(URL, data=form(b"definitely not audio", model="english"), headers=AUTH)
+    assert r.status == 400 and shelf.loads == []
+
+
+async def test_nobody_waits_for_a_model_that_is_being_loaded_but_those_who_asked_for_it(client, shelf):
+    """Loading takes seconds. A file for the main model and a dictation go on meanwhile; two files for the
+    model that is being loaded are one load of it."""
+    shelf.gate = threading.Event()
+    first = asyncio.create_task(client.post(URL, data=form(wav_bytes(1.0), model="english"), headers=AUTH))
+    second = asyncio.create_task(client.post(URL, data=form(wav_bytes(2.0), model="english"), headers=AUTH))
+    for _ in range(200):
+        if shelf.extras.loading() == "english":
+            break
+        await asyncio.sleep(0.01)
+    r = await asyncio.wait_for(client.post(URL, data=form(wav_bytes(1.0)), headers=AUTH), 5)
+    assert await r.json() == {"text": "len16000"}                        # the main model answers meanwhile
+    ws = await client.ws_connect("/v1/realtime", headers=AUTH)
+    assert (await asyncio.wait_for(ws.receive_json(), 5))["type"] == "session.created"       # ...and a dictation begins
+    await ws.close()
+    assert not first.done() and not second.done()
+    shelf.now += 600
+    assert shelf.extras.sweep() is None                                  # being loaded for somebody: not let go of
+    shelf.gate.set()
+    answers = [await (await asked).json() for asked in (first, second)]
+    assert answers == [{"text": "english:16000"}, {"text": "english:32000"}] and shelf.loads == ["english"]
+    shelf.now += 600
+    assert shelf.extras.sweep() == "english"                             # both answered: nothing holds it
+
+
+async def test_a_model_asked_for_by_one_who_went_away_is_not_held_for_ever(shelf):
+    shelf.gate = threading.Event()
+    asking = asyncio.create_task(acquired(shelf.extras, "english"))
+    for _ in range(200):
+        if shelf.extras.loading() == "english":
+            break
+        await asyncio.sleep(0.01)
+    asking.cancel()                                          # the gateway is stopping while the model is being loaded
+    with contextlib.suppress(asyncio.CancelledError):
+        await asking
+    shelf.gate.set()
+    for _ in range(200):
+        if shelf.extras.loaded() == "english":
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    shelf.now += 600
+    assert shelf.extras.sweep() == "english"                # loaded for nobody: nobody holds it
+
+
+async def test_the_models_are_told_to_whoever_has_the_key(client, engine):
+    r = await client.get(MODELS, headers=AUTH)
+    assert r.status == 200 and await r.json() == {"object": "list", "data": [
+        {"id": "fake", "object": "model", "language": "ru", "main": True, "installed": True, "loaded": True},
+        {"id": "english", "object": "model", "language": "en", "main": False, "installed": True, "loaded": False}]}
+    assert (await client.get(MODELS)).status == 401
+    await client.post(URL, data=form(wav_bytes(1.0), model="english"), headers=AUTH)
+    assert (await (await client.get(MODELS, headers=AUTH)).json())["data"][1]["loaded"] is True
+    engine.status = "loading"                               # asked while the main model is still being loaded
+    data = (await (await client.get(MODELS, headers=AUTH)).json())["data"]
+    assert (data[0]["installed"], data[0]["loaded"]) == (True, False)
+    engine.status, engine.extras = "error", None            # the main model did not load; there are no others
+    assert (await (await client.get(MODELS, headers=AUTH)).json())["data"] == [
+        {"id": "fake", "object": "model", "language": "ru", "main": True, "installed": False, "loaded": False}]
+
+
+async def test_a_file_that_could_not_be_recognized_does_not_leave_its_model_counted_as_used(client, engine, shelf):
+    def no_vad():
+        raise RuntimeError("the pauses could not be looked for")
+
+    engine.make_vad = no_vad
+    r = await client.post(URL, data=form(wav_bytes(1.0), model="english"), headers=AUTH)
+    assert r.status == 500 and shelf.extras.loaded() == "english"
+    shelf.now += 600
+    assert shelf.extras.sweep() == "english"                # the request failed: the model is free all the same
+
+
+async def test_a_model_that_was_let_go_of_is_held_by_nothing_of_the_request_that_used_it(client, shelf):
+    r = await client.post(URL, data=form(wav_bytes(1.0), model="english"), headers=AUTH)
+    assert await r.json() == {"text": "english:16000"}
+    shelf.now += 600
+    assert shelf.extras.sweep() == "english"
+    for _ in range(200):                                    # the recognition thread still waits for its next job
+        gc.collect()
+        if shelf.made[0]() is None:
+            break
+        await asyncio.sleep(0.01)
+    assert shelf.made[0]() is None                          # its memory is given back now, not when somebody dictates next

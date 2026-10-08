@@ -1,5 +1,8 @@
+import gc
 import queue
 import threading
+import time
+import weakref
 
 import numpy as np
 import pytest
@@ -183,3 +186,37 @@ def test_forget_drops_background_jobs_too(delivered, make_job):
     assert drain(delivered, 1) == [("busy", 1, True, "len1000")]
     w.stop()
     assert delivered.empty()
+
+
+def test_a_job_may_bring_the_recognizer_of_another_model(delivered):
+    w = Worker(lambda samples: "main")
+    w.start()
+    say = lambda job, text: delivered.put(text)
+    w.submit(Job("file", 1, True, AUDIO, say, background=True, recognize=lambda samples: f"other:{len(samples)}"))
+    w.submit(Job("file", 2, True, AUDIO, say, background=True))
+    got = drain(delivered, 2)
+    w.stop()
+    assert got == ["other:1600", "main"]
+
+
+def test_a_job_that_is_done_is_let_go_of_while_the_thread_waits_for_the_next(delivered):
+    """A job holds what recognizes it. A model beside the main one must leave memory when it is let go of -
+    not when the thread happens to be given its next job, which may be hours away."""
+    class Model:
+        def recognize(self, samples):
+            return "read"
+
+    model = Model()
+    gone = weakref.ref(model)
+    w = Worker(lambda samples: "main")
+    w.start()
+    w.submit(Job("file", 1, True, AUDIO, lambda job, text: delivered.put(text), background=True, recognize=model.recognize))
+    assert drain(delivered, 1) == ["read"]
+    del model                                                            # nobody else holds it: the thread alone could
+    deadline = time.monotonic() + 5
+    while gone() is not None and time.monotonic() < deadline:
+        gc.collect()
+        time.sleep(0.01)
+    let_go = gone() is None                                             # while the thread still waits: stopping it would let go of anything
+    w.stop()
+    assert let_go

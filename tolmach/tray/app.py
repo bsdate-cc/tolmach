@@ -3,6 +3,7 @@ gatewayctl and the client controller. Nothing here ever toasts or pops up on its
 the icon changes and the menu acts."""
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import logging
 import shutil
@@ -19,7 +20,7 @@ from tolmach.client import overlay, paste
 from tolmach.client.app import ClientApp
 from tolmach.client.hotkey import label as hotkey_label
 from tolmach.i18n import N_, _
-from tolmach.tray import autostart, gatewayctl, icons, relaunch, updater
+from tolmach.tray import autostart, gatewayctl, icons, models, relaunch, updater
 
 log = logging.getLogger("tolmach")
 
@@ -99,6 +100,11 @@ class TrayApp:
         self._checked: tuple[str, str] | None = None             # (time, result) of the last check by hand
         # Re-entrant: taking an update asks origin again from the same thread.
         self._update_lock = threading.RLock()
+        self._fetching: int | None = None    # the English model is being downloaded: so many percent of it have come
+        self._fetch_failed = False
+        self._fetch_lock = threading.Lock()
+        with contextlib.suppress(OSError):   # a tray closed in the middle of that download left a half behind: hundreds of megabytes
+            models.clear_leftovers(paths.models_dir(), models.ENGLISH)
         self._client = ClientApp(on_state=lambda state: self.refresh())
         self._button_rules = False   # whether the microphone button starts a dictation now; kept by refresh()
         self.icon = pystray.Icon("Tolmach", icons.image(icons.DOWN), _title(), menu=self._menu())
@@ -139,6 +145,8 @@ class TrayApp:
             item(lambda i: _("Перезапустить шлюз"), _menu_action(self._restart_gateway)),
             item(lambda i: _("Остановить шлюз"), _menu_action(self._stop_gateway)),
             item(lambda i: _("Открыть журналы"), _menu_action(self._open_logs)),
+            item(lambda i: self._english_row(), _menu_action(self._fetch_english),
+                 enabled=lambda i: self._english_wanted(), visible=lambda i: self._english_known()),
             menu.SEPARATOR,
             item(lambda i: self._update_line() or "", _menu_action(self._apply_update),
                  visible=lambda i: self._update_line() is not None),
@@ -148,6 +156,54 @@ class TrayApp:
                  visible=lambda i: self._update.kind != "off"),
             item(lambda i: _("Выход…"), _menu_action(self._exit)),
         )
+
+    def _english_known(self) -> bool:
+        """Do the settings name the English model this program knows where to get?"""
+        return config.english_model() in self._cfg.gateway.extra_models
+
+    def _english_there(self) -> bool:
+        return not models.missing(paths.models_dir(), models.ENGLISH)
+
+    def _english_wanted(self) -> bool:
+        """Is there anything to download, and is it not being downloaded already?"""
+        return self._fetching is None and not self._english_there()
+
+    def _english_row(self) -> str:
+        if self._fetching is not None:
+            return _("Английская модель: скачивается, {percent} %").format(percent=self._fetching)
+        if self._english_there():
+            return _("Английская модель: установлена")
+        if self._fetch_failed:
+            return _("Английская модель: не скачалась — повторить")
+        return _("Английская модель: скачать ({mb} МБ)").format(mb=models.ENGLISH_MB)
+
+    def _fetch_english(self, icon, item) -> None:
+        """Download the English model: the answer to a click, never done by itself. The gateway
+        finds the files when it is next asked for the model - it need not be restarted."""
+        with self._fetch_lock:
+            if self._fetching is not None:
+                return
+            self._fetching, self._fetch_failed = 0, False
+        self.refresh()
+        got, failed = 0, True
+        try:
+            folder = paths.models_dir()
+            total = sum(file.size for file in models.missing(folder, models.ENGLISH)) or 1
+
+            def tick(count: int) -> None:
+                # A hundred is said by the row "installed", once the files are in place. The menu is not
+                # built anew here, at every percent: the look the tray takes every few seconds reads the row.
+                nonlocal got
+                got += count
+                self._fetching = min(99, got * 100 // total)
+
+            failed = not models.ensure(folder, lambda line: log.info("the English model: %s", line.strip()),
+                                       models.ENGLISH, tick)
+        except Exception:
+            log.exception("the English model could not be downloaded")
+        finally:
+            self._fetching, self._fetch_failed = None, failed
+            self.refresh()
 
     def _dictation_row(self) -> str:
         """Start or stop, and what does it besides this row: the hotkey, or the microphone button."""
@@ -421,7 +477,7 @@ class TrayApp:
                          self._update_line(), self._update.note, self._check_line(), self._update.kind,
                          self._stale, i18n.language(), self._cfg.language,
                          self._config_bad, gatewayctl.status_line(self._health), self._health is None,
-                         tuple(self._devices))
+                         tuple(self._devices), self._english_row(), self._english_known())
                 if shown != self._menu_shown:
                     self.icon.update_menu()
                     self._menu_shown = shown

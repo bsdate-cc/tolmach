@@ -18,6 +18,10 @@ def test_the_changelog_starts_with_the_current_version():
     assert newest.group(1) == VERSION
 
 
+def test_this_is_the_version_that_knows_more_than_one_model():
+    assert tuple(map(int, VERSION.split("."))) >= (0, 10, 0)
+
+
 def test_the_startup_window_names_the_version():
     from tolmach.tray import startup
 

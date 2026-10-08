@@ -80,6 +80,42 @@ GigaAM v3 опубликована SberDevices под лицензией MIT
 декодер, joiner, токены): положите её файлы в папку моделей и назовите их в `config.json`, раздел
 `gateway.model`. Окно запуска скачивает только файлы из таблицы выше; свои файлы вы кладёте сами.
 
+**Вторая модель — для файлов на другом языке.** Диктовка всегда идёт через основную модель. Файл,
+отправленный на `POST /v1/audio/transcriptions`, может назвать другую модель в поле `model`: она
+загружается, когда её впервые попросили, и выгружается через десять минут без обращений
+(`gateway.extra_idle_minutes`), то есть память — около гигабайта — занимает только пока работает.
+Диктовка её загрузку не ждёт. `GET /v1/models` говорит, какие модели есть, какие из них установлены и
+какая сейчас в памяти. Любое другое имя в поле `model` — или его отсутствие — значит основную модель.
+
+Одна такая модель уже описана в настройках по умолчанию: `parakeet-unified-en`, только английский —
+[NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-unified-en-0.6b) (unified, 0.6b),
+опубликована под NVIDIA Open Model License; 8-битная сборка для sherpa-onnx от его авторов
+([csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming](https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming)),
+закреплённая ревизия. Окно запуска её не скачивает: в меню значка есть пункт «Английская модель:
+скачать (663 МБ)», и каждый файл так же сверяется с контрольной суммой SHA-256. Файлы ложатся в
+`models\parakeet-unified-en`; чтобы убрать модель, удалите эту папку. Шлюз перезапускать не нужно ни
+в том, ни в другом случае.
+
+Другие модели того же вида — те, что sherpa-onnx загружает как NeMo-трансдьюсер, — перечисляются в
+`config.json`. Первая запись в примере — английская модель, как она описана по умолчанию:
+
+```json
+"gateway": {
+  "extra_models": [
+    { "name": "parakeet-unified-en", "language": "en", "type": "nemo_transducer",
+      "encoder": "parakeet-unified-en/encoder.int8.onnx", "decoder": "parakeet-unified-en/decoder.int8.onnx",
+      "joiner": "parakeet-unified-en/joiner.int8.onnx", "tokens": "parakeet-unified-en/tokens.txt" },
+    { "name": "my-model", "language": "de", "type": "nemo_transducer",
+      "encoder": "my-model/encoder.onnx", "decoder": "my-model/decoder.onnx",
+      "joiner": "my-model/joiner.onnx", "tokens": "my-model/tokens.txt" }
+  ]
+}
+```
+
+Пути — от папки `models` или полные. Список в файле заменяет список по умолчанию целиком: без первой
+записи английская модель и её пункт в меню пропадут. Имя модели — то, что называют в поле `model`;
+оно не должно совпадать с именем основной. После правки списка перезапустите шлюз.
+
 ## Как пользоваться
 
 1. Поставьте курсор туда, куда нужен текст.
@@ -165,6 +201,7 @@ main = мэйн, мейн
 | `client.mute_other_apps` | `true` | глушить другие программы на время записи |
 | `client.silence_autostop_s` | `60` | остановить запись после стольких секунд тишины |
 | `gateway.port` | `8765` | порт шлюза на `127.0.0.1` |
+| `gateway.extra_idle_minutes` | `10` | сколько минут дополнительная модель остаётся в памяти после последнего обращения к ней |
 | `autostart` | `true` | запускать трей при входе в Windows |
 
 Все настройки и их значения по умолчанию — в `tolmach/config.py`.

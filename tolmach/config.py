@@ -12,7 +12,7 @@ import os
 import threading
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import get_args, get_type_hints
+from typing import get_args, get_origin, get_type_hints
 
 from tolmach import paths
 
@@ -22,11 +22,21 @@ log = logging.getLogger("tolmach")
 @dataclass
 class ModelConfig:
     name: str = "gigaam-v3"
+    # The language the model hears, as a two-letter code: told to whoever asks which models there are.
+    language: str = "ru"
     type: str = "nemo_transducer"
     encoder: str = "gigaam-v3/gigaam_v3_e2e_rnnt_encoder_int8.onnx"
     decoder: str = "gigaam-v3/gigaam_v3_e2e_rnnt_decoder.onnx"
     joiner: str = "gigaam-v3/gigaam_v3_e2e_rnnt_joint.onnx"
     tokens: str = "gigaam-v3/gigaam_v3_e2e_rnnt_tokens.txt"
+
+
+def english_model() -> ModelConfig:
+    """The English model the tray can download: NVIDIA Parakeet (unified, 0.6b) in eight bits."""
+    folder = "parakeet-unified-en"
+    return ModelConfig(name=folder, language="en", encoder=f"{folder}/encoder.int8.onnx",
+                       decoder=f"{folder}/decoder.int8.onnx", joiner=f"{folder}/joiner.int8.onnx",
+                       tokens=f"{folder}/tokens.txt")
 
 
 @dataclass
@@ -43,6 +53,11 @@ class GatewayConfig:
     port: int = 8765
     threads: int = 4
     model: ModelConfig = field(default_factory=ModelConfig)
+    # Models beside the main one. A request for a file names the one it wants; such a model is
+    # loaded when it is first asked for and let go of after extra_idle_minutes without a request.
+    # Dictation always goes through the main model.
+    extra_models: list[ModelConfig] = field(default_factory=lambda: [english_model()])
+    extra_idle_minutes: float = 10.0
     vad: VadConfig = field(default_factory=VadConfig)
     draft_interval_s: float = 1.0
     max_phrase_s: float = 25.0
@@ -128,6 +143,7 @@ _CHECKS = {
     "gateway.threads": (lambda v: v >= 1, "must be >= 1"),
     "gateway.draft_interval_s": (lambda v: v > 0, "must be > 0"),
     "gateway.max_phrase_s": (lambda v: 1 <= v <= 30, "must be 1..30"),
+    "gateway.extra_idle_minutes": (lambda v: v >= 0, "must be >= 0"),
     "gateway.vad.threshold": (lambda v: 0 < v < 1, "must be between 0 and 1"),
     "gateway.vad.min_silence_s": (lambda v: v > 0, "must be > 0"),
     "gateway.vad.min_speech_s": (lambda v: v > 0, "must be > 0"),
@@ -159,6 +175,38 @@ def _coerce(value, hint):
     return False, value
 
 
+_MODEL_FILES = ("encoder", "decoder", "joiner", "tokens")
+
+
+def _extra_models(value, main: str, where: str, problems: list[Problem]) -> list[ModelConfig] | None:
+    """The models beside the main one as the file lists them; None if it lists none at all.
+    One that is not described whole is left out: half a model is of no use to anybody."""
+    if not isinstance(value, list):
+        problems.append(Problem(where, "expected a list, default kept"))
+        return None
+    models: list[ModelConfig] = []
+    for n, item in enumerate(value):
+        at = f"{where}[{n}]"
+        if not isinstance(item, dict):
+            problems.append(Problem(at, "expected an object, left out"))
+            continue
+        model = ModelConfig(name="", language="", encoder="", decoder="", joiner="", tokens="")
+        _merge(model, item, at, problems)
+        if not model.name:
+            wrong = ("name", "a model needs a name")
+        elif model.name == main:
+            wrong = ("name", "this is the name of the main model")
+        elif any(model.name == other.name for other in models):
+            wrong = ("name", "this name is used already")
+        else:
+            wrong = next(((role, "the model needs this file") for role in _MODEL_FILES if not getattr(model, role)), None)
+        if wrong is not None:
+            problems.append(Problem(f"{at}.{wrong[0]}", f"{wrong[1]}, left out"))
+            continue
+        models.append(model)
+    return models
+
+
 def _merge(obj, data, where: str, problems: list[Problem]) -> None:
     if not isinstance(data, dict):
         problems.append(Problem(where or "<root>", "expected an object, defaults kept"))
@@ -176,6 +224,11 @@ def _merge(obj, data, where: str, problems: list[Problem]) -> None:
         current = getattr(obj, f.name)
         if is_dataclass(current):
             _merge(current, value, path, problems)
+            continue
+        if get_origin(hint) is list:        # the one list there is: the models beside the main one
+            listed = _extra_models(value, obj.model.name, path, problems)
+            if listed is not None:
+                setattr(obj, f.name, listed)
             continue
         options = get_args(hint)
         if value is None and type(None) in options:

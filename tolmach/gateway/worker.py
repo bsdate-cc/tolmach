@@ -26,6 +26,8 @@ class Job:
     # A phrase of an uploaded file: runs only when no dictation needs the engine,
     # so a ten-minute file cannot hold up a live session.
     background: bool = False
+    # The recognizer of another model, for a file that asked for one; None - the main model.
+    recognize: Callable[[np.ndarray], str] | None = None
 
 
 class Worker:
@@ -90,14 +92,20 @@ class Worker:
 
     def _run(self) -> None:
         while (job := self._next()) is not None:
-            try:
-                text = self._recognize(job.samples)
-            except Exception:
-                log.exception("recognition failed")  # no text and no audio in the log
-                text = ""
-            if self._stale(job):
-                continue  # the phrase closed while this draft was being computed
-            try:
-                job.deliver(job, text)
-            except Exception:
-                log.exception("delivering a result failed")
+            self._do(job)
+            # Not held while the thread waits for the next one: a job holds what recognizes it,
+            # and a model beside the main one must leave memory when it is let go of.
+            del job
+
+    def _do(self, job: Job) -> None:
+        try:
+            text = (job.recognize or self._recognize)(job.samples)
+        except Exception:
+            log.exception("recognition failed")  # no text and no audio in the log
+            text = ""
+        if self._stale(job):
+            return  # the phrase closed while this draft was being computed
+        try:
+            job.deliver(job, text)
+        except Exception:
+            log.exception("delivering a result failed")

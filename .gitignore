@@ -5,3 +5,5 @@ __pycache__/
 .worktrees/
 # a recording of a voice, for the model tests only (see tests/conftest.py)
 tests/data/benchmark.wav
+# a few seconds of English speech from the page of the English model, for the model tests only
+tests/data/english.wav

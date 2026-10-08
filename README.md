@@ -85,6 +85,43 @@ joiner, tokens) can be used: put its files into the models folder and name them 
 section `gateway.model`. The launcher downloads only the files listed above; files of your own are
 yours to put in place.
 
+**A second model, for files in another language.** Dictation always goes through the main model. A
+file sent to `POST /v1/audio/transcriptions` may name another model in the `model` field: that model
+is loaded when it is first asked for and let go of after ten minutes without a request
+(`gateway.extra_idle_minutes`), so it takes memory - about a gigabyte - only while it works. Dictation
+does not wait for it to load. `GET /v1/models` tells which models there are, which of them are
+installed and which one is in memory. Any other name in `model` - or none - means the main model.
+
+One such model is described in the default settings: `parakeet-unified-en`, English only -
+[NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-unified-en-0.6b) (unified, 0.6b), published
+under the NVIDIA Open Model License, in eight bits, from the conversion for sherpa-onnx by its authors
+([csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming](https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming))
+at one fixed revision. The launcher does not download it: the tray menu has "English model: download
+(663 MB)", and each file is checked against a known SHA-256 like the others. The files go into
+`models\parakeet-unified-en`; to remove the model, delete that folder. The gateway need not be
+restarted either way.
+
+More models of the same kind - those sherpa-onnx loads as a NeMo transducer - are listed in
+`config.json`. The first entry of the example is the English model as the defaults describe it:
+
+```json
+"gateway": {
+  "extra_models": [
+    { "name": "parakeet-unified-en", "language": "en", "type": "nemo_transducer",
+      "encoder": "parakeet-unified-en/encoder.int8.onnx", "decoder": "parakeet-unified-en/decoder.int8.onnx",
+      "joiner": "parakeet-unified-en/joiner.int8.onnx", "tokens": "parakeet-unified-en/tokens.txt" },
+    { "name": "my-model", "language": "de", "type": "nemo_transducer",
+      "encoder": "my-model/encoder.onnx", "decoder": "my-model/decoder.onnx",
+      "joiner": "my-model/joiner.onnx", "tokens": "my-model/tokens.txt" }
+  ]
+}
+```
+
+Paths are taken from the `models` folder, or are full ones. The list in the file replaces the default
+list as a whole: without the first entry the English model and its row in the menu are gone. The name
+of a model is what the `model` field names; it must not be the name of the main model. Restart the
+gateway after editing the list.
+
 ## Usage
 
 1. Put the cursor where the text should go.
@@ -171,6 +208,7 @@ you meant something else: `питон` always becomes `Python`.
 | `client.mute_other_apps` | `true` | mute other programs while recording |
 | `client.silence_autostop_s` | `60` | stop the recording after this many seconds of silence |
 | `gateway.port` | `8765` | the gateway's port on `127.0.0.1` |
+| `gateway.extra_idle_minutes` | `10` | how long a model beside the main one stays in memory after the last request for it |
 | `autostart` | `true` | start the tray when you log in to Windows |
 
 All settings and their defaults are in `tolmach/config.py`.
