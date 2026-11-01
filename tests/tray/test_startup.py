@@ -72,8 +72,11 @@ def own_model() -> config.GatewayConfig:
 
 def test_python_must_be_64_bit_and_recent():
     assert startup.check_python("py.exe", (3, 12, 10), 2**63 - 1).status == "OK"
-    assert startup.check_python("py.exe", (3, 13, 0), 2**31 - 1).status == "FAIL"
-    assert startup.check_python("py.exe", (3, 11, 9), 2**63 - 1).status == "FAIL"
+    assert startup.check_python("py.exe", (3, 14, 0), 2**63 - 1).status == "OK"
+    for result in (startup.check_python("py.exe", (3, 13, 0), 2**31 - 1),
+                   startup.check_python("py.exe", (3, 11, 9), 2**63 - 1)):
+        assert result.status == "FAIL"
+        assert "run tolmach.cmd again" in result.details[-1]  # the way out is named
 
 
 def test_missing_libraries_are_named_by_what_pip_installs():

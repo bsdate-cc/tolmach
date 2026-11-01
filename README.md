@@ -41,7 +41,8 @@ second before its first word and ends after the pause that closed it.
 ## Requirements
 
 - Windows 10 or 11, 64-bit.
-- [Python 3.12](https://www.python.org/downloads/) (64-bit) and [git](https://git-scm.com/).
+- [Python 3.12 or newer](https://www.python.org/downloads/windows/), 64-bit, and [git](https://git-scm.com/). Other
+  Pythons may stay, a 32-bit one too: `tolmach.cmd` picks a suitable one itself.
 - A microphone. A button on it is optional: without one, dictation starts with the hotkey.
 - About 350 MB of disk space for the models.
 
@@ -53,7 +54,9 @@ cd tolmach
 tolmach.cmd
 ```
 
-`tolmach.cmd` (a double click works too) creates the `.venv` environment and checks Python, the
+`tolmach.cmd` (a double click works too) creates the `.venv` environment - with the oldest 64-bit
+Python 3.12 or newer it finds; when there is none, it lists the Pythons it found, says why each one
+will not do and what to install - and checks Python, the
 libraries, the settings, the models, the microphone and the gateway. Whatever is missing it offers to
 install: the libraries with pip, the models by downloading them. Then it starts the tray. Every step
 is printed in the window and written to a log.

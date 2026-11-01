@@ -57,11 +57,12 @@ def check_python(executable: str | None = None, version: tuple | None = None,
     v = tuple(version or sys.version_info[:3])
     bits = 64 if (maxsize or sys.maxsize) > 2**32 else 32
     summary = f"{'.'.join(map(str, v))}, {bits}-bit, {exe}"
+    remake = r"delete the .venv folder and run tolmach.cmd again: it picks a suitable Python itself"
     if bits == 32:
-        return CheckResult("Python", "FAIL", summary,
-                           ("a 64-bit Python is needed: the recognition engine has no 32-bit build",))
+        return CheckResult("Python", "FAIL", summary, ("Tolmach needs a 64-bit Python", remake))
     if v[:2] < MIN_PYTHON:
-        return CheckResult("Python", "FAIL", summary, ("Python 3.12 or newer is needed",))
+        return CheckResult("Python", "FAIL", summary,
+                           (f"Tolmach needs Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer", remake))
     return CheckResult("Python", "OK", summary)
 
 
